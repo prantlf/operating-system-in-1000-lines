@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html><head><title>Disk I/O - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - Disk I/O</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="font-bold">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><p>In this chapter, we will implement a device driver for the virtio-blk, a virtual disk device. While virtio-blk does not exist in real hardware, it shares the very same interface as a real one.</p>
+<h2 id="virtio"><a class="anchor" href="15-virtio-blk.html#virtio">Virtio</a></h2>
+<p>Virtio is a device interface standard for virtual devices (virtio devices). In other words, it is one of APIs for device drivers to control devices. Like you use HTTP to access web servers, you use virtio to access virtio devices. Virtio is widely used in virtualization environments such as QEMU and Firecracker.</p>
+<h3 id="virtqueue"><a class="anchor" href="15-virtio-blk.html#virtqueue">Virtqueue</a></h3>
+<p>Virtio devices have a structure called a virtqueue. As the name suggests, it is a queue shared between the driver and the device. In a nutshell:</p>
+<p>A virtqueue consists of the following three areas:</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Written by</th>
+<th>Content</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Descriptor Area</td>
+<td>Driver</td>
+<td>A Table of descriptors: the address and size of the request</td>
+<td>Memory address, length, index of the next descriptor</td>
+</tr>
+<tr>
+<td>Available Ring</td>
+<td>Driver</td>
+<td>Processing requests to the device</td>
+<td>The head index of the descriptor chain</td>
+</tr>
+<tr>
+<td>Used Ring</td>
+<td>Device</td>
+<td>Processing requests handled by the device</td>
+<td>The head index of the descriptor chain</td>
+</tr>
+</tbody>
+</table>
+<p><img src="../images/virtio.svg" alt="virtqueue diagram"></p>
+<p>Each request (e.g., a write to disk) consists of multiple descriptors, called a descriptor chain. By splitting into multiple descriptors, you can specify scattered memory data (so-called Scatter-Gather IO) or give different descriptor attributes (whether writable by the device).</p>
+<p>For example, when writing to a disk, virtqueue will be used as follows:</p>
+<ol>
+<li>The driver writes a read/write request in the Descriptor area.</li>
+<li>The driver adds the index of the head descriptor to the Available Ring.</li>
+<li>The driver notifies the device that there is a new request.</li>
+<li>The device reads a request from the Available Ring and processes it.</li>
+<li>The device writes the descriptor index to the Used Ring, and notifies the driver that it is complete.</li>
+</ol>
+<p>For details, refer to the <a href="https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html">virtio specification</a>. In this implementation, we will focus on a device called virtio-blk.</p>
+<h2 id="enabling-virtio-devices"><a class="anchor" href="15-virtio-blk.html#enabling-virtio-devices">Enabling virtio devices</a></h2>
+<p>Before writing a device driver, let's prepare a test file. Create a file named <code>lorem.txt</code> and fill it with some random text like the following:</p>
+<pre><code class="language-plain">$ echo "Lorem ipsum dolor sit amet, consectetur adipiscing elit. In ut magna consequat, cursus velit aliquam, scelerisque odio. Ut lorem eros, feugiat quis bibendum vitae, malesuada ac orci. Praesent eget quam non nunc fringilla cursus imperdiet non tellus. Aenean dictum lobortis turpis, non interdum leo rhoncus sed. Cras in tellus auctor, faucibus tortor ut, maximus metus. Praesent placerat ut magna non tristique. Pellentesque at nunc quis dui tempor vulputate. Vestibulum vitae massa orci. Mauris et tellus quis risus sagittis placerat. Integer lorem leo, feugiat sed molestie non, viverra a tellus." > lorem.txt
+</code></pre>
+<p>Also, attach a virtio-blk device to QEMU:</p>
+<pre><div class="code-block-title">run.sh</div><code class="language-bash"><span class="pl-smi">$QEMU</span> -machine virt -bios default -nographic -serial mon:stdio --no-reboot \
+    -d unimp,guest_errors,int,cpu_reset -D qemu.log \
+    -drive id=drive0,file=lorem.txt,format=raw,if=none <span class="pl-cce">\ </span>           <span class="pl-c"># new</span>
+    -device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 <span class="pl-cce">\ </span> <span class="pl-c"># new</span>
+    -kernel kernel.elf
+</code></pre>
+<p>The newly added options are as follows:</p>
+<ul>
+<li><code>-drive id=drive0</code>: Defines disk named <code>drive0</code>, with <code>lorem.txt</code> as the disk image. The disk image format is <code>raw</code> (treats the file contents as-is as disk data).</li>
+<li><code>-device virtio-blk-device</code>: Adds a virtio-blk device with disk <code>drive0</code>. <code>bus=virtio-mmio-bus.0</code> maps the device into a virtio-mmio bus (virtio over Memory Mapped I/O).</li>
+</ul>
+<h2 id="define-c-macrosstructs"><a class="anchor" href="15-virtio-blk.html#define-c-macrosstructs">Define C macros/structs</a></h2>
+<p>First, let's add some virtio-related definitions to <code>kernel.h</code>:</p>
+<pre><div class="code-block-title">kernel.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">SECTOR_SIZE</span>       <span class="pl-c1">512</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTQ_ENTRY_NUM</span>   <span class="pl-c1">16</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_DEVICE_BLK</span> <span class="pl-c1">2</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_BLK_PADDR</span>  <span class="pl-c1">0x10001000</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_MAGIC</span>         <span class="pl-c1">0x00</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_VERSION</span>       <span class="pl-c1">0x04</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_DEVICE_ID</span>     <span class="pl-c1">0x08</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_QUEUE_SEL</span>     <span class="pl-c1">0x30</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_QUEUE_NUM_MAX</span> <span class="pl-c1">0x34</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_QUEUE_NUM</span>     <span class="pl-c1">0x38</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_QUEUE_ALIGN</span>   <span class="pl-c1">0x3c</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_QUEUE_PFN</span>     <span class="pl-c1">0x40</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_QUEUE_READY</span>   <span class="pl-c1">0x44</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_QUEUE_NOTIFY</span>  <span class="pl-c1">0x50</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_DEVICE_STATUS</span> <span class="pl-c1">0x70</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_REG_DEVICE_CONFIG</span> <span class="pl-c1">0x100</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_STATUS_ACK</span>       <span class="pl-c1">1</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_STATUS_DRIVER</span>    <span class="pl-c1">2</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_STATUS_DRIVER_OK</span> <span class="pl-c1">4</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_STATUS_FEAT_OK</span>   <span class="pl-c1">8</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTQ_DESC_F_NEXT</span>          <span class="pl-c1">1</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTQ_DESC_F_WRITE</span>         <span class="pl-c1">2</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTQ_AVAIL_F_NO_INTERRUPT</span> <span class="pl-c1">1</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_BLK_T_IN</span>  <span class="pl-c1">0</span>
+#<span class="pl-k">define</span> <span class="pl-en">VIRTIO_BLK_T_OUT</span> <span class="pl-c1">1</span>
+
+<span class="pl-c">// Virtqueue Descriptor area entry.</span>
+<span class="pl-k">struct</span> virtq_desc {
+    <span class="pl-c1">uint64_t</span> addr;
+    <span class="pl-c1">uint32_t</span> len;
+    <span class="pl-c1">uint16_t</span> flags;
+    <span class="pl-c1">uint16_t</span> next;
+} __attribute__((packed));
+
+<span class="pl-c">// Virtqueue Available Ring.</span>
+<span class="pl-k">struct</span> virtq_avail {
+    <span class="pl-c1">uint16_t</span> flags;
+    <span class="pl-c1">uint16_t</span> <span class="pl-c1">index</span>;
+    <span class="pl-c1">uint16_t</span> ring[VIRTQ_ENTRY_NUM];
+} __attribute__((packed));
+
+<span class="pl-c">// Virtqueue Used Ring entry.</span>
+<span class="pl-k">struct</span> virtq_used_elem {
+    <span class="pl-c1">uint32_t</span> id;
+    <span class="pl-c1">uint32_t</span> len;
+} __attribute__((packed));
+
+<span class="pl-c">// Virtqueue Used Ring.</span>
+<span class="pl-k">struct</span> virtq_used {
+    <span class="pl-c1">uint16_t</span> flags;
+    <span class="pl-c1">uint16_t</span> <span class="pl-c1">index</span>;
+    <span class="pl-k">struct</span> virtq_used_elem ring[VIRTQ_ENTRY_NUM];
+} __attribute__((packed));
+
+<span class="pl-c">// Virtqueue.</span>
+<span class="pl-k">struct</span> virtio_virtq {
+    <span class="pl-k">struct</span> virtq_desc descs[VIRTQ_ENTRY_NUM];
+    <span class="pl-k">struct</span> virtq_avail avail;
+    <span class="pl-k">struct</span> virtq_used used <span class="pl-smi">__attribute__</span>((<span class="pl-c1">aligned</span>(PAGE_SIZE)));
+    <span class="pl-k">int</span> queue_index;
+    <span class="pl-k">volatile</span> <span class="pl-c1">uint16_t</span> *used_index;
+    <span class="pl-c1">uint16_t</span> last_used_index;
+} __attribute__((packed));
+
+<span class="pl-c">// Virtio-blk request.</span>
+<span class="pl-k">struct</span> virtio_blk_req {
+    <span class="pl-c1">uint32_t</span> type;
+    <span class="pl-c1">uint32_t</span> reserved;
+    <span class="pl-c1">uint64_t</span> sector;
+    <span class="pl-c1">uint8_t</span> data[<span class="pl-c1">512</span>];
+    <span class="pl-c1">uint8_t</span> status;
+} __attribute__((packed));
+</code></pre>
+<blockquote class="callout callout-note">
+<p><code>__attribute__((packed))</code> is a compiler extension that tells the compiler to pack the struct members without <em>padding</em>. Otherwise, the compiler may add hidden padding bytes and driver/device may see different values.</p>
+</blockquote>
+<p>Next, add utility functions to <code>kernel.c</code> for accessing MMIO registers:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-c1">uint32_t</span> <span class="pl-en">virtio_reg_read32</span>(<span class="pl-k">unsigned</span> offset) {
+    <span class="pl-k">return</span> *((<span class="pl-k">volatile</span> <span class="pl-c1">uint32_t</span> *) (VIRTIO_BLK_PADDR + offset));
+}
+
+<span class="pl-c1">uint64_t</span> <span class="pl-en">virtio_reg_read64</span>(<span class="pl-k">unsigned</span> offset) {
+    <span class="pl-k">return</span> *((<span class="pl-k">volatile</span> <span class="pl-c1">uint64_t</span> *) (VIRTIO_BLK_PADDR + offset));
+}
+
+<span class="pl-k">void</span> <span class="pl-en">virtio_reg_write32</span>(<span class="pl-k">unsigned</span> offset, <span class="pl-c1">uint32_t</span> value) {
+    *((<span class="pl-k">volatile</span> <span class="pl-c1">uint32_t</span> *) (VIRTIO_BLK_PADDR + offset)) = value;
+}
+
+<span class="pl-k">void</span> <span class="pl-en">virtio_reg_fetch_and_or32</span>(<span class="pl-k">unsigned</span> offset, <span class="pl-c1">uint32_t</span> value) {
+    <span class="pl-c1">virtio_reg_write32</span>(offset, <span class="pl-c1">virtio_reg_read32</span>(offset) | value);
+}
+</code></pre>
+<blockquote class="callout callout-warning">
+<p>Accessing MMIO registers are not same as accessing normal memory. You should use <code>volatile</code> keyword to prevent the compiler from optimizing out the read/write operations. In MMIO, memory access may trigger side effects (e.g., sending a command to the device).</p>
+</blockquote>
+<h2 id="map-the-mmio-region"><a class="anchor" href="15-virtio-blk.html#map-the-mmio-region">Map the MMIO region</a></h2>
+<p>First, map the <code>virtio-blk</code> MMIO region to the page table so that the kernel can access the MMIO registers. It's super simple:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">struct</span> process *<span class="pl-en">create_process</span>(<span class="pl-k">const</span> <span class="pl-k">void</span> *image, <span class="pl-c1">size_t</span> image_size) {
+    <span class="pl-c">/* omitted */</span>
+
+    <span class="pl-k">for</span> (<span class="pl-c1">paddr_t</span> paddr = (<span class="pl-c1">paddr_t</span>) __kernel_base;
+         paddr &#x3C; (<span class="pl-c1">paddr_t</span>) __free_ram_end; paddr += PAGE_SIZE)
+        <span class="pl-c1">map_page</span>(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+
+    <span class="pl-c1">map_page</span>(page_table, VIRTIO_BLK_PADDR, VIRTIO_BLK_PADDR, PAGE_R | PAGE_W); <span class="pl-c">// new</span>
+</code></pre>
+<h2 id="virtio-device-initialization"><a class="anchor" href="15-virtio-blk.html#virtio-device-initialization">Virtio device initialization</a></h2>
+<p>The initialization process is detailed in the <a href="https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html#x1-910003">virtio specification</a>:</p>
+<blockquote>
+<p>3.1.1 Driver Requirements: Device Initialization
+The driver MUST follow this sequence to initialize a device:</p>
+<ol>
+<li>Reset the device.</li>
+<li>Set the ACKNOWLEDGE status bit: the guest OS has noticed the device.</li>
+<li>Set the DRIVER status bit: the guest OS knows how to drive the device.</li>
+<li>Read device feature bits, and write the subset of feature bits understood by the OS and driver to the device. During this step the driver MAY read (but MUST NOT write) the device-specific configuration fields to check that it can support the device before accepting it.</li>
+<li>Set the FEATURES_OK status bit. The driver MUST NOT accept new feature bits after this step.</li>
+<li>Re-read device status to ensure the FEATURES_OK bit is still set: otherwise, the device does not support our subset of features and the device is unusable.</li>
+<li>Perform device-specific setup, including discovery of virtqueues for the device, optional per-bus setup, reading and possibly writing the device’s virtio configuration space, and population of virtqueues.</li>
+<li>Set the DRIVER_OK status bit. At this point the device is “live”.</li>
+</ol>
+</blockquote>
+<p>You might be overwhelmed by lengthy steps, but don't worry. A naive implementation is very simple:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">struct</span> virtio_virtq *blk_request_vq;
+<span class="pl-k">struct</span> virtio_blk_req *blk_req;
+<span class="pl-c1">paddr_t</span> blk_req_paddr;
+<span class="pl-k">unsigned</span> blk_capacity;
+
+<span class="pl-k">void</span> <span class="pl-en">virtio_blk_init</span>(<span class="pl-k">void</span>) {
+    <span class="pl-k">if</span> (<span class="pl-c1">virtio_reg_read32</span>(VIRTIO_REG_MAGIC) != <span class="pl-c1">0x74726976</span>)
+        <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>virtio: invalid magic value<span class="pl-pds">"</span></span>);
+    <span class="pl-k">if</span> (<span class="pl-c1">virtio_reg_read32</span>(VIRTIO_REG_VERSION) != <span class="pl-c1">1</span>)
+        <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>virtio: invalid version<span class="pl-pds">"</span></span>);
+    <span class="pl-k">if</span> (<span class="pl-c1">virtio_reg_read32</span>(VIRTIO_REG_DEVICE_ID) != VIRTIO_DEVICE_BLK)
+        <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>virtio: invalid device id<span class="pl-pds">"</span></span>);
+
+    <span class="pl-c">// 1. Reset the device.</span>
+    <span class="pl-c1">virtio_reg_write32</span>(VIRTIO_REG_DEVICE_STATUS, <span class="pl-c1">0</span>);
+    <span class="pl-c">// 2. Set the ACKNOWLEDGE status bit: the guest OS has noticed the device.</span>
+    <span class="pl-c1">virtio_reg_fetch_and_or32</span>(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACK);
+    <span class="pl-c">// 3. Set the DRIVER status bit.</span>
+    <span class="pl-c1">virtio_reg_fetch_and_or32</span>(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_DRIVER);
+    <span class="pl-c">// 5. Set the FEATURES_OK status bit.</span>
+    <span class="pl-c1">virtio_reg_fetch_and_or32</span>(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_FEAT_OK);
+    <span class="pl-c">// 7. Perform device-specific setup, including discovery of virtqueues for the device</span>
+    blk_request_vq = <span class="pl-c1">virtq_init</span>(<span class="pl-c1">0</span>);
+    <span class="pl-c">// 8. Set the DRIVER_OK status bit.</span>
+    <span class="pl-c1">virtio_reg_write32</span>(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_DRIVER_OK);
+
+    <span class="pl-c">// Get the disk capacity.</span>
+    blk_capacity = <span class="pl-c1">virtio_reg_read64</span>(VIRTIO_REG_DEVICE_CONFIG + <span class="pl-c1">0</span>) * SECTOR_SIZE;
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>virtio-blk: capacity is <span class="pl-c1">%d</span> bytes<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, blk_capacity);
+
+    <span class="pl-c">// Allocate a region to store requests to the device.</span>
+    blk_req_paddr = <span class="pl-c1">alloc_pages</span>(<span class="pl-c1">align_up</span>(<span class="pl-k">sizeof</span>(*blk_req), PAGE_SIZE) / PAGE_SIZE);
+    blk_req = (<span class="pl-k">struct</span> virtio_blk_req *) blk_req_paddr;
+}
+</code></pre>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">kernel_main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">memset</span>(__bss, <span class="pl-c1">0</span>, (<span class="pl-c1">size_t</span>) __bss_end - (<span class="pl-c1">size_t</span>) __bss);
+    <span class="pl-c1">WRITE_CSR</span>(stvec, (<span class="pl-c1">uint32_t</span>) kernel_entry);
+
+    <span class="pl-c1">virtio_blk_init</span>(); <span class="pl-c">// new</span>
+</code></pre>
+<h2 id="virtqueue-initialization"><a class="anchor" href="15-virtio-blk.html#virtqueue-initialization">Virtqueue initialization</a></h2>
+<p>Virtqueues also need to be initialized. Let's read the specification:</p>
+<blockquote>
+<p>The virtual queue is configured as follows:</p>
+<ol>
+<li>Select the queue writing its index (first queue is 0) to QueueSel.</li>
+<li>Check if the queue is not already in use: read QueuePFN, expecting a returned value of zero (0x0).</li>
+<li>Read maximum queue size (number of elements) from QueueNumMax. If the returned value is zero (0x0) the queue is not available.</li>
+<li>Allocate and zero the queue pages in contiguous virtual memory, aligning the Used Ring to an optimal boundary (usually page size). The driver should choose a queue size smaller than or equal to QueueNumMax.</li>
+<li>Notify the device about the queue size by writing the size to QueueNum.</li>
+<li>Notify the device about the used alignment by writing its value in bytes to QueueAlign.</li>
+<li>Write the physical number of the first page of the queue to the QueuePFN register.</li>
+</ol>
+</blockquote>
+<p>Here's a simple implementation:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">struct</span> virtio_virtq *<span class="pl-en">virtq_init</span>(<span class="pl-k">unsigned</span> index) {
+    <span class="pl-c">// Allocate a region for the virtqueue.</span>
+    <span class="pl-c1">paddr_t</span> virtq_paddr = <span class="pl-c1">alloc_pages</span>(<span class="pl-c1">align_up</span>(<span class="pl-k">sizeof</span>(<span class="pl-k">struct</span> virtio_virtq), PAGE_SIZE) / PAGE_SIZE);
+    <span class="pl-k">struct</span> virtio_virtq *vq = (<span class="pl-k">struct</span> virtio_virtq *) virtq_paddr;
+    vq-><span class="pl-smi">queue_index</span> = <span class="pl-c1">index</span>;
+    vq-><span class="pl-smi">used_index</span> = (<span class="pl-k">volatile</span> <span class="pl-c1">uint16_t</span> *) &#x26;vq-><span class="pl-smi">used</span>.<span class="pl-smi">index</span>;
+    <span class="pl-c">// 1. Select the queue writing its index (first queue is 0) to QueueSel.</span>
+    <span class="pl-c1">virtio_reg_write32</span>(VIRTIO_REG_QUEUE_SEL, <span class="pl-c1">index</span>);
+    <span class="pl-c">// 5. Notify the device about the queue size by writing the size to QueueNum.</span>
+    <span class="pl-c1">virtio_reg_write32</span>(VIRTIO_REG_QUEUE_NUM, VIRTQ_ENTRY_NUM);
+    <span class="pl-c">// 6. Notify the device about the used alignment by writing its value in bytes to QueueAlign.</span>
+    <span class="pl-c1">virtio_reg_write32</span>(VIRTIO_REG_QUEUE_ALIGN, <span class="pl-c1">0</span>);
+    <span class="pl-c">// 7. Write the physical number of the first page of the queue to the QueuePFN register.</span>
+    <span class="pl-c1">virtio_reg_write32</span>(VIRTIO_REG_QUEUE_PFN, virtq_paddr);
+    <span class="pl-k">return</span> vq;
+}
+</code></pre>
+<p>This function allocates a memory region for a virtqueue, and tells the its physical address to the device. The device will use this memory region to read/write requests.</p>
+<blockquote class="callout callout-tip">
+<p>What drivers do in the initialization process is to check device capabilities/features, allocating OS resources (e.g., memory regions), and setting parameters. Isn't it similar to handshakes in network protocols?</p>
+</blockquote>
+<h2 id="sending-io-requests"><a class="anchor" href="15-virtio-blk.html#sending-io-requests">Sending I/O requests</a></h2>
+<p>We now have an initialized virtio-blk device. Let's send an I/O request to the disk. I/O requests to the disk is implemented by <em>"adding processing requests to the virtqueue"</em> as follows:</p>
+<pre><code class="language-c"><span class="pl-c">// Notifies the device that there is a new request. `desc_index` is the index</span>
+<span class="pl-c">// of the head descriptor of the new request.</span>
+<span class="pl-k">void</span> <span class="pl-en">virtq_kick</span>(<span class="pl-k">struct</span> virtio_virtq *vq, <span class="pl-k">int</span> desc_index) {
+    vq-><span class="pl-smi">avail</span>.<span class="pl-smi">ring</span>[vq-><span class="pl-smi">avail</span>.<span class="pl-smi">index</span> % VIRTQ_ENTRY_NUM] = desc_index;
+    vq-><span class="pl-smi">avail</span>.<span class="pl-smi">index</span>++;
+    <span class="pl-c1">__sync_synchronize</span>();
+    <span class="pl-c1">virtio_reg_write32</span>(VIRTIO_REG_QUEUE_NOTIFY, vq-><span class="pl-smi">queue_index</span>);
+    vq-><span class="pl-smi">last_used_index</span>++;
+}
+
+<span class="pl-c">// Returns whether there are requests being processed by the device.</span>
+<span class="pl-k">bool</span> <span class="pl-en">virtq_is_busy</span>(<span class="pl-k">struct</span> virtio_virtq *vq) {
+    <span class="pl-k">return</span> vq-><span class="pl-smi">last_used_index</span> != *vq-><span class="pl-smi">used_index</span>;
+}
+
+<span class="pl-c">// Reads/writes from/to virtio-blk device.</span>
+<span class="pl-k">void</span> <span class="pl-en">read_write_disk</span>(<span class="pl-k">void</span> *buf, <span class="pl-k">unsigned</span> sector, <span class="pl-k">int</span> is_write) {
+    <span class="pl-k">if</span> (sector >= blk_capacity / SECTOR_SIZE) {
+        <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>virtio: tried to read/write sector=<span class="pl-c1">%d</span>, but capacity is <span class="pl-c1">%d</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>,
+              sector, blk_capacity / SECTOR_SIZE);
+        <span class="pl-k">return</span>;
+    }
+
+    <span class="pl-c">// Construct the request according to the virtio-blk specification.</span>
+    blk_req-><span class="pl-smi">sector</span> = sector;
+    blk_req-><span class="pl-smi">type</span> = is_write ? VIRTIO_BLK_T_OUT : VIRTIO_BLK_T_IN;
+    <span class="pl-k">if</span> (is_write)
+        <span class="pl-c1">memcpy</span>(blk_req-><span class="pl-smi">data</span>, buf, SECTOR_SIZE);
+
+    <span class="pl-c">// Construct the virtqueue descriptors (using 3 descriptors).</span>
+    <span class="pl-k">struct</span> virtio_virtq *vq = blk_request_vq;
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">0</span>].<span class="pl-smi">addr</span> = blk_req_paddr;
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">0</span>].<span class="pl-smi">len</span> = <span class="pl-k">sizeof</span>(<span class="pl-c1">uint32_t</span>) * <span class="pl-c1">2</span> + <span class="pl-k">sizeof</span>(<span class="pl-c1">uint64_t</span>);
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">0</span>].<span class="pl-smi">flags</span> = VIRTQ_DESC_F_NEXT;
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">0</span>].<span class="pl-smi">next</span> = <span class="pl-c1">1</span>;
+
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">1</span>].<span class="pl-smi">addr</span> = blk_req_paddr + <span class="pl-c1">offsetof</span>(<span class="pl-k">struct</span> virtio_blk_req, data);
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">1</span>].<span class="pl-smi">len</span> = SECTOR_SIZE;
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">1</span>].<span class="pl-smi">flags</span> = VIRTQ_DESC_F_NEXT | (is_write ? <span class="pl-c1">0</span> : VIRTQ_DESC_F_WRITE);
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">1</span>].<span class="pl-smi">next</span> = <span class="pl-c1">2</span>;
+
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">2</span>].<span class="pl-smi">addr</span> = blk_req_paddr + <span class="pl-c1">offsetof</span>(<span class="pl-k">struct</span> virtio_blk_req, status);
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">2</span>].<span class="pl-smi">len</span> = <span class="pl-k">sizeof</span>(<span class="pl-c1">uint8_t</span>);
+    vq-><span class="pl-smi">descs</span>[<span class="pl-c1">2</span>].<span class="pl-smi">flags</span> = VIRTQ_DESC_F_WRITE;
+
+    <span class="pl-c">// Notify the device that there is a new request.</span>
+    <span class="pl-c1">virtq_kick</span>(vq, <span class="pl-c1">0</span>);
+
+    <span class="pl-c">// Wait until the device finishes processing.</span>
+    <span class="pl-k">while</span> (<span class="pl-c1">virtq_is_busy</span>(vq))
+        ;
+
+    <span class="pl-c">// virtio-blk: If a non-zero value is returned, it's an error.</span>
+    <span class="pl-k">if</span> (blk_req-><span class="pl-smi">status</span> != <span class="pl-c1">0</span>) {
+        <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>virtio: warn: failed to read/write sector=<span class="pl-c1">%d</span> status=<span class="pl-c1">%d</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>,
+               sector, blk_req-><span class="pl-smi">status</span>);
+        <span class="pl-k">return</span>;
+    }
+
+    <span class="pl-c">// For read operations, copy the data into the buffer.</span>
+    <span class="pl-k">if</span> (!is_write)
+        <span class="pl-c1">memcpy</span>(buf, blk_req-><span class="pl-smi">data</span>, SECTOR_SIZE);
+}
+</code></pre>
+<p>A request is sent in the following steps:</p>
+<ol>
+<li>Construct a request in <code>blk_req</code>. Specify the sector number you want to access and the type of read/write.</li>
+<li>Construct a descriptor chain pointing to each area of <code>blk_req</code> (see below).</li>
+<li>Add the index of the head descriptor of the descriptor chain to the Available Ring.</li>
+<li>Notify the device that there is a new pending request.</li>
+<li>Wait until the device finishes processing (aka <em>busy-waiting</em> or <em>polling</em>).</li>
+<li>Check the response from the device.</li>
+</ol>
+<p>Here, we construct a descriptor chain consisting of 3 descriptors. We need 3 descriptors because each descriptor has different attributes (<code>flags</code>) as follows:</p>
+<pre><code class="language-c"><span class="pl-k">struct</span> virtio_blk_req {
+    <span class="pl-c">// First descriptor: read-only from the device</span>
+    <span class="pl-c1">uint32_t</span> type;
+    <span class="pl-c1">uint32_t</span> reserved;
+    <span class="pl-c1">uint64_t</span> sector;
+
+    <span class="pl-c">// Second descriptor: writable by the device if it's a read operation (VIRTQ_DESC_F_WRITE)</span>
+    <span class="pl-c1">uint8_t</span> data[<span class="pl-c1">512</span>];
+
+    <span class="pl-c">// Third descriptor: writable by the device (VIRTQ_DESC_F_WRITE)</span>
+    <span class="pl-c1">uint8_t</span> status;
+} __attribute__((packed));
+</code></pre>
+<p>Because we busy-wait until the processing is complete every time, we can simply use the <em>first</em> 3 descriptors in the ring. However, in practice, you need to track free/used descriptors to process multiple requests simultaneously.</p>
+<h2 id="try-it-out"><a class="anchor" href="15-virtio-blk.html#try-it-out">Try it out</a></h2>
+<p>Lastly, let's try disk I/O. Add the following code to <code>kernel.c</code>:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c">    <span class="pl-en">virtio_blk_init</span>();
+
+    <span class="pl-k">char</span> buf[SECTOR_SIZE];
+    <span class="pl-en">read_write_disk</span>(buf, <span class="pl-c1">0</span>, <span class="pl-c1">false</span> <span class="pl-c">/* read from the disk */</span>);
+    <span class="pl-en">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>first sector: <span class="pl-c1">%s</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, buf);
+
+    <span class="pl-en">strcpy</span>(buf, <span class="pl-s"><span class="pl-pds">"</span>hello from kernel!!!<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+    <span class="pl-en">read_write_disk</span>(buf, <span class="pl-c1">0</span>, <span class="pl-c1">true</span> <span class="pl-c">/* write to the disk */</span>);
+</code></pre>
+<p>Since we specify <code>lorem.txt</code> as the (raw) disk image, its contents should be displayed as-is:</p>
+<pre><code class="language-plain">$ ./run.sh
+
+virtio-blk: capacity is 1024 bytes
+first sector: Lorem ipsum dolor sit amet, consectetur adipiscing elit ...
+</code></pre>
+<p>Also, the first sector is overwritten with the string "hello from kernel!!!":</p>
+<pre><code class="language-plain">$ head lorem.txt
+hello from kernel!!!
+amet, consectetur adipiscing elit ...
+</code></pre>
+<p>Congratulations! You've successfully implemented a disk I/O driver!</p>
+<blockquote>
+<p>[!TIP]
+As you would notice, device drivers are just a "glue" between the OS and the device's. Device will do the rest of all the heavy lifting, like moving disk read/write heads. Drivers communicate with another software running on the device (e.g., firmware), not controlling the hardware directly.</p>
+</blockquote></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="16-file-system.html">File System ⏩</a><a href="14-system-call.html" class="sm:-order-1">⏪ System Call</a></div></footer></body></html>

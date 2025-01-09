@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html><head><title>Hello World! - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - Hello World!</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="font-bold">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><p>In the previous chapter, we successfully booted our first kernel. Although we could confirm it works by reading the register dump, it still feels somewhat unsatisfactory.</p>
+<p>In this chapter, let's make it more obvious by outputting a string from the kernel.</p>
+<h2 id="say-hello-to-sbi"><a class="anchor" href="05-hello-world.html#say-hello-to-sbi">Say "hello" to SBI</a></h2>
+<p>In the previous chapter, we learned that SBI is an "API for OS". To call the SBI to use its function, we use the <code>ecall</code> instruction:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c">#<span class="pl-k">include</span> <span class="pl-s"><span class="pl-pds">"</span>kernel.h<span class="pl-pds">"</span></span>
+
+<span class="pl-k">extern</span> <span class="pl-k">char</span> __bss[], __bss_end[], __stack_top[];
+
+<span class="pl-k">struct</span> sbiret <span class="pl-en">sbi_call</span>(<span class="pl-k">long</span> arg0, <span class="pl-k">long</span> arg1, <span class="pl-k">long</span> arg2, <span class="pl-k">long</span> arg3, <span class="pl-k">long</span> arg4,
+                       <span class="pl-k">long</span> arg5, <span class="pl-k">long</span> fid, <span class="pl-k">long</span> eid) {
+    <span class="pl-k">register</span> <span class="pl-k">long</span> a0 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a0<span class="pl-pds">"</span></span>) = arg0;
+    <span class="pl-k">register</span> <span class="pl-k">long</span> a1 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a1<span class="pl-pds">"</span></span>) = arg1;
+    <span class="pl-k">register</span> <span class="pl-k">long</span> a2 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a2<span class="pl-pds">"</span></span>) = arg2;
+    <span class="pl-k">register</span> <span class="pl-k">long</span> a3 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a3<span class="pl-pds">"</span></span>) = arg3;
+    <span class="pl-k">register</span> <span class="pl-k">long</span> a4 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a4<span class="pl-pds">"</span></span>) = arg4;
+    <span class="pl-k">register</span> <span class="pl-k">long</span> a5 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a5<span class="pl-pds">"</span></span>) = arg5;
+    <span class="pl-k">register</span> <span class="pl-k">long</span> a6 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a6<span class="pl-pds">"</span></span>) = fid;
+    <span class="pl-k">register</span> <span class="pl-k">long</span> a7 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a7<span class="pl-pds">"</span></span>) = eid;
+
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>ecall<span class="pl-pds">"</span></span>
+                         : <span class="pl-s"><span class="pl-pds">"</span>=r<span class="pl-pds">"</span></span>(a0), <span class="pl-s"><span class="pl-pds">"</span>=r<span class="pl-pds">"</span></span>(a1)
+                         : <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a0), <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a1), <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a2), <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a3), <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a4), <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a5),
+                           <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a6), <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a7)
+                         : <span class="pl-s"><span class="pl-pds">"</span>memory<span class="pl-pds">"</span></span>);
+    <span class="pl-k">return</span> (<span class="pl-k">struct</span> sbiret){.<span class="pl-smi">error</span> = a0, .<span class="pl-smi">value</span> = a1};
+}
+
+<span class="pl-k">void</span> <span class="pl-en">putchar</span>(<span class="pl-k">char</span> ch) {
+    <span class="pl-c1">sbi_call</span>(ch, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">1</span> <span class="pl-c">/* Console Putchar */</span>);
+}
+
+<span class="pl-k">void</span> <span class="pl-en">kernel_main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-k">const</span> <span class="pl-k">char</span> *s = <span class="pl-s"><span class="pl-pds">"</span><span class="pl-cce">\n\n</span>Hello World!<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>;
+    <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">0</span>; s[i] != <span class="pl-s"><span class="pl-pds">'</span><span class="pl-cce">\0</span><span class="pl-pds">'</span></span>; i++) {
+        <span class="pl-c1">putchar</span>(s[i]);
+    }
+
+    <span class="pl-k">for</span> (;;) {
+        <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>wfi<span class="pl-pds">"</span></span>);
+    }
+}
+</code></pre>
+<p>Also, create a new <code>kernel.h</code> file and define the return value structure:</p>
+<pre><div class="code-block-title">kernel.h</div><code class="language-c">#<span class="pl-k">pragma</span> once
+
+<span class="pl-k">struct</span> sbiret {
+    <span class="pl-k">long</span> error;
+    <span class="pl-k">long</span> value;
+};
+</code></pre>
+<p>We've newly added the <code>sbi_call</code> function. This function is designed to call OpenSBI as specified in the SBI specification. The specific calling convention is as follows:</p>
+<blockquote>
+<p><strong>Chapter 3. Binary Encoding</strong></p>
+<p>All SBI functions share a single binary encoding, which facilitates the mixing of SBI extensions. The SBI specification follows the below calling convention.</p>
+<ul>
+<li>An <code>ECALL</code> is used as the control transfer instruction between the supervisor and the SEE.</li>
+<li><code>a7</code> encodes the SBI extension ID (<strong>EID</strong>),</li>
+<li><code>a6</code> encodes the SBI function ID (<strong>FID</strong>) for a given extension ID encoded in <code>a7</code> for any SBI extension defined in or after SBI v0.2.</li>
+<li>All registers except <code>a0</code> &#x26; <code>a1</code> must be preserved across an SBI call by the callee.</li>
+<li>SBI functions must return a pair of values in <code>a0</code> and <code>a1</code>, with <code>a0</code> returning an error code. This is analogous to returning the C structure</li>
+</ul>
+<pre><code class="language-c"><span class="pl-k">struct</span> sbiret {
+    <span class="pl-k">long</span> error;
+    <span class="pl-k">long</span> value;
+};
+</code></pre>
+<p>-- "RISC-V Supervisor Binary Interface Specification" v2.0-rc1</p>
+</blockquote>
+<blockquote class="callout callout-tip">
+<p><em>"All registers except <code>a0</code> &#x26; <code>a1</code> must be preserved across an SBI call by the callee"</em> means that the callee (OpenSBI side) must not change the values of <em><strong>except</strong></em> <code>a0</code> and <code>a1</code>. In other words, from the kernel's perspective, it is guaranteed that the registers (<code>a2</code> to <code>a7</code>) will remain the same after the call.</p>
+</blockquote>
+<p>The <code>register</code> and <code>__asm__("register name")</code> used in each local variable declaration asks the compiler to place values in the specified registers. This is a common idiom in system call invocations (e.g., <a href="https://git.musl-libc.org/cgit/musl/tree/arch/riscv64/syscall_arch.h">Linux system call invocation process</a>).</p>
+<p>After preparing the arguments, the <code>ecall</code> instruction is executed in inline assembly. When this is called, the CPU's execution mode switches from kernel mode (S-Mode) to OpenSBI mode (M-Mode), and OpenSBI's processing handler is invoked. Once it's done, it switches back to kernel mode, and execution resumes after the <code>ecall</code> instruction.</p>
+<p>The <code>ecall</code> instruction is also used when applications call the kernel (system calls). This instruction behaves like a function call to the more privileged CPU mode.</p>
+<p>To display characters, we can use <code>Console Putchar</code> function:</p>
+<blockquote>
+<p>5.2. Extension: Console Putchar (EID #0x01)</p>
+<pre><code class="language-c">  <span class="pl-k">long</span> <span class="pl-en">sbi_console_putchar</span>(<span class="pl-k">int</span> ch)
+</code></pre>
+<p>Write data present in ch to debug console.</p>
+<p>Unlike sbi_console_getchar(), this SBI call will block if there remain any pending characters to be transmitted or if the receiving terminal is not yet ready to receive the byte. However, if the console doesn’t exist at all, then the character is thrown away.</p>
+<p>This SBI call returns 0 upon success or an implementation specific negative error code.</p>
+<p>-- "RISC-V Supervisor Binary Interface Specification" v2.0-rc1</p>
+</blockquote>
+<p><code>Console Putchar</code> is a function that outputs the character passed as an argument to the debug console.</p>
+<h3 id="try-it-out"><a class="anchor" href="05-hello-world.html#try-it-out">Try it out</a></h3>
+<p>Let's try your implementation. You should see <code>Hello World!</code> if it works:</p>
+<pre><code class="language-plain">$ ./run.sh
+...
+
+Hello World!
+</code></pre>
+<blockquote class="callout callout-tip">
+<p><strong>Life of Hello World:</strong></p>
+<p>When SBI is called, characters will be displayed as follows:</p>
+<ol>
+<li>The kernel executes <code>ecall</code> instruction. The CPU jumps to the M-mode trap handler (<code>mtvec</code> register), which is set by OpenSBI during startup.</li>
+<li>After saving registers, the <a href="https://github.com/riscv-software-src/opensbi/blob/0ad866067d7853683d88c10ea9269ae6001bcf6f/lib/sbi/sbi_trap.c#L263">trap handler written in C</a> is called.</li>
+<li>Based on the <code>eid</code>, the <a href="https://github.com/riscv-software-src/opensbi/blob/0ad866067d7853683d88c10ea9269ae6001bcf6f/lib/sbi/sbi_ecall_legacy.c#L63C2-L65">corresponding SBI processing function is called</a>.</li>
+<li>The <a href="https://github.com/riscv-software-src/opensbi/blob/0ad866067d7853683d88c10ea9269ae6001bcf6f/lib/utils/serial/uart8250.c#L77">device driver</a> for the 8250 UART (<a href="https://en.wikipedia.org/wiki/8250_UART">Wikipedia</a>) sends the character to QEMU.</li>
+<li>QEMU's 8250 UART emulation implementation receives the character and sends it to the standard output.</li>
+<li>The terminal emulator displays the character.</li>
+</ol>
+<p>That is, by calling <code>Console Putchar</code> function is not a magic at all - it just uses the device driver implemented in OpenSBI!</p>
+</blockquote>
+<h2 id="printf-function"><a class="anchor" href="05-hello-world.html#printf-function"><code>printf</code> function</a></h2>
+<p>We've successfully printed some characters. The next item is implementing <code>printf</code> function.</p>
+<p><code>printf</code> function takes a format string, and the values to be embedded in the output. For example, <code>printf("1 + 2 = %d", 1 + 2)</code> will display <code>1 + 2 = 3</code>.</p>
+<p>While <code>printf</code> bundled in the C standard library has a very rich set of features, let's start with a minimal version. Specifically, we'll implement a <code>printf</code> that supports three format specifiers: <code>%d</code> (decimal), <code>%x</code> (hexadecimal), and <code>%s</code> (string).</p>
+<p>Since we'll use <code>printf</code> in applications too, let's create a new file <code>common.c</code> for code shared between the kernel and userland.</p>
+<p>Here's the implementation of the <code>printf</code> function:</p>
+<pre><div class="code-block-title">common.c</div><code class="language-c">#<span class="pl-k">include</span> <span class="pl-s"><span class="pl-pds">"</span>common.h<span class="pl-pds">"</span></span>
+
+<span class="pl-k">void</span> <span class="pl-en">putchar</span>(<span class="pl-k">char</span> ch);
+
+<span class="pl-k">void</span> <span class="pl-en">printf</span>(<span class="pl-k">const</span> <span class="pl-k">char</span> *fmt, ...) {
+    <span class="pl-c1">va_list</span> vargs;
+    <span class="pl-c1">va_start</span>(vargs, fmt);
+
+    <span class="pl-k">while</span> (*fmt) {
+        <span class="pl-k">if</span> (*fmt == <span class="pl-s"><span class="pl-pds">'</span>%<span class="pl-pds">'</span></span>) {
+            fmt++; <span class="pl-c">// Skip '%'</span>
+            <span class="pl-k">switch</span> (*fmt) { <span class="pl-c">// Read the next character</span>
+                <span class="pl-k">case</span> <span class="pl-s"><span class="pl-pds">'</span><span class="pl-cce">\0</span><span class="pl-pds">'</span></span>: <span class="pl-c">// '%' at the end of the format string</span>
+                    <span class="pl-c1">putchar</span>(<span class="pl-s"><span class="pl-pds">'</span>%<span class="pl-pds">'</span></span>);
+                    <span class="pl-k">goto</span> end;
+                <span class="pl-k">case</span> <span class="pl-s"><span class="pl-pds">'</span>%<span class="pl-pds">'</span></span>: <span class="pl-c">// Print '%'</span>
+                    <span class="pl-c1">putchar</span>(<span class="pl-s"><span class="pl-pds">'</span>%<span class="pl-pds">'</span></span>);
+                    <span class="pl-k">break</span>;
+                <span class="pl-k">case</span> <span class="pl-s"><span class="pl-pds">'</span>s<span class="pl-pds">'</span></span>: { <span class="pl-c">// Print a NULL-terminated string.</span>
+                    <span class="pl-k">const</span> <span class="pl-k">char</span> *s = <span class="pl-c1">va_arg</span>(vargs, <span class="pl-k">const</span> <span class="pl-k">char</span> *);
+                    <span class="pl-k">while</span> (*s) {
+                        <span class="pl-c1">putchar</span>(*s);
+                        s++;
+                    }
+                    <span class="pl-k">break</span>;
+                }
+                <span class="pl-k">case</span> <span class="pl-s"><span class="pl-pds">'</span>d<span class="pl-pds">'</span></span>: { <span class="pl-c">// Print an integer in decimal.</span>
+                    <span class="pl-k">int</span> value = <span class="pl-c1">va_arg</span>(vargs, <span class="pl-k">int</span>);
+                    <span class="pl-k">if</span> (value &#x3C; <span class="pl-c1">0</span>) {
+                        <span class="pl-c1">putchar</span>(<span class="pl-s"><span class="pl-pds">'</span>-<span class="pl-pds">'</span></span>);
+                        value = -value;
+                    }
+
+                    <span class="pl-k">int</span> divisor = <span class="pl-c1">1</span>;
+                    <span class="pl-k">while</span> (value / divisor > <span class="pl-c1">9</span>)
+                        divisor *= <span class="pl-c1">10</span>;
+
+                    <span class="pl-k">while</span> (divisor > <span class="pl-c1">0</span>) {
+                        <span class="pl-c1">putchar</span>(<span class="pl-s"><span class="pl-pds">'</span>0<span class="pl-pds">'</span></span> + value / divisor);
+                        value %= divisor;
+                        divisor /= <span class="pl-c1">10</span>;
+                    }
+
+                    <span class="pl-k">break</span>;
+                }
+                <span class="pl-k">case</span> <span class="pl-s"><span class="pl-pds">'</span>x<span class="pl-pds">'</span></span>: { <span class="pl-c">// Print an integer in hexadecimal.</span>
+                    <span class="pl-k">int</span> value = <span class="pl-c1">va_arg</span>(vargs, <span class="pl-k">int</span>);
+                    <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">7</span>; i >= <span class="pl-c1">0</span>; i--) {
+                        <span class="pl-k">int</span> nibble = (value >> (i * <span class="pl-c1">4</span>)) &#x26; <span class="pl-c1">0xf</span>;
+                        <span class="pl-c1">putchar</span>(<span class="pl-s"><span class="pl-pds">"</span>0123456789abcdef<span class="pl-pds">"</span></span>[nibble]);
+                    }
+                }
+            }
+        } <span class="pl-k">else</span> {
+            <span class="pl-c1">putchar</span>(*fmt);
+        }
+
+        fmt++;
+    }
+
+end:
+    <span class="pl-c1">va_end</span>(vargs);
+}
+</code></pre>
+<p>It's surprisingly concise, isn't it? It goes through the format string character by character, and if we encounter a <code>%</code>, we look at the next character and perform the corresponding formatting operation. Characters other than <code>%</code> are printed as is.</p>
+<p>For decimal numbers, if <code>value</code> is negative, we first output a <code>-</code> and then get its absolute value. We then calculate the divisor to get the most significant digit and output the digits one by one.</p>
+<p>For hexadecimal numbers, we output from the most significant <em>nibble</em> (a hexadecimal digit, 4 bits) to the least significant. Here, <code>nibble</code> is an integer from 0 to 15, so we use it as the index in string <code>"0123456789abcdef"</code> to get the corresponding character.</p>
+<p><code>va_list</code> and related macros are defined in the C standard library's <code>&#x3C;stdarg.h></code>. In this book, we use compiler builtins directly without relying on the standard library. Specifically, we'll define them in <code>common.h</code> as follows:</p>
+<pre><div class="code-block-title">common.h</div><code class="language-c">#<span class="pl-k">pragma</span> once
+
+#<span class="pl-k">define</span> <span class="pl-en">va_list</span>  __builtin_va_list
+#<span class="pl-k">define</span> <span class="pl-en">va_start</span> __builtin_va_start
+#<span class="pl-k">define</span> <span class="pl-en">va_end</span>   __builtin_va_end
+#<span class="pl-k">define</span> <span class="pl-en">va_arg</span>   __builtin_va_arg
+
+<span class="pl-k">void</span> <span class="pl-en">printf</span>(<span class="pl-k">const</span> <span class="pl-k">char</span> *fmt, ...);
+</code></pre>
+<p>We're simply defining these as aliases for the versions with <code>__builtin_</code> prefixed. They are builtin features provided by the compiler (clang) itself (<a href="https://clang.llvm.org/docs/LanguageExtensions.html#variadic-function-builtins">Reference: clang documentation</a>). The compiler will handle the rest appropriately, so we don't need to worry about it.</p>
+<p>Now we've implemented <code>printf</code>. Let's add a "Hello World" from the kernel:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c">#<span class="pl-k">include</span> <span class="pl-s"><span class="pl-pds">"</span>kernel.h<span class="pl-pds">"</span></span>
+#<span class="pl-k">include</span> <span class="pl-s"><span class="pl-pds">"</span>common.h<span class="pl-pds">"</span></span>
+
+<span class="pl-k">void</span> <span class="pl-en">kernel_main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span><span class="pl-cce">\n\n</span>Hello <span class="pl-c1">%s</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, <span class="pl-s"><span class="pl-pds">"</span>World!<span class="pl-pds">"</span></span>);
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>1 + 2 = <span class="pl-c1">%d</span>, <span class="pl-c1">%x</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, <span class="pl-c1">1</span> + <span class="pl-c1">2</span>, <span class="pl-c1">0x1234abcd</span>);
+
+    <span class="pl-k">for</span> (;;) {
+        <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>wfi<span class="pl-pds">"</span></span>);
+    }
+}
+</code></pre>
+<p>Also, Add <code>common.c</code> to the compilation targets:</p>
+<pre><div class="code-block-title">run.sh</div><code class="language-bash"><span class="pl-smi">$CC</span> <span class="pl-smi">$CFLAGS</span> -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf \
+    kernel.c common.c
+</code></pre>
+<p>Now, let's try! You will see <code>Hello World!</code> and <code>1 + 2 = 3, 1234abcd</code> as shown below:</p>
+<pre><code class="language-plain">$ ./run.sh
+
+Hello World!
+1 + 2 = 3, 1234abcd
+</code></pre>
+<p>The powerful ally "printf debugging" has joined your OS!</p></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="06-libc.html">C Standard Library ⏩</a><a href="04-boot.html" class="sm:-order-1">⏪ Boot</a></div></footer></body></html>

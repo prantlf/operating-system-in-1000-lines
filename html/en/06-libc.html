@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html><head><title>C Standard Library - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - C Standard Library</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="font-bold">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><p>In this chapter, let's implement basic types and memory operations, as well as string manipulation functions. In this books, for the purpose of learning, we'll create these from scratch instead of using C standard library.</p>
+<blockquote class="callout callout-tip">
+<p>The concepts introduced in this chapter are very common in C programming, so ChatGPT would provide solid answers. If you struggle with implementation or understanding any part, feel free to try asking it or ping me.</p>
+</blockquote>
+<h2 id="basic-types"><a class="anchor" href="06-libc.html#basic-types">Basic types</a></h2>
+<p>First, let's define some basic types and convenient macros:</p>
+<pre><div class="code-block-title">common.h</div><code class="language-c"><span class="pl-k">typedef</span> <span class="pl-k">int</span> <span class="pl-k">bool</span>;
+<span class="pl-k">typedef</span> <span class="pl-k">unsigned</span> <span class="pl-k">char</span> <span class="pl-c1">uint8_t</span>;
+<span class="pl-k">typedef</span> <span class="pl-k">unsigned</span> <span class="pl-k">short</span> <span class="pl-c1">uint16_t</span>;
+<span class="pl-k">typedef</span> <span class="pl-k">unsigned</span> <span class="pl-k">int</span> <span class="pl-c1">uint32_t</span>;
+<span class="pl-k">typedef</span> <span class="pl-k">unsigned</span> <span class="pl-k">long</span> <span class="pl-k">long</span> <span class="pl-c1">uint64_t</span>;
+<span class="pl-k">typedef</span> <span class="pl-c1">uint32_t</span> <span class="pl-c1">size_t</span>;
+<span class="pl-k">typedef</span> <span class="pl-c1">uint32_t</span> <span class="pl-c1">paddr_t</span>;
+<span class="pl-k">typedef</span> <span class="pl-c1">uint32_t</span> <span class="pl-c1">vaddr_t</span>;
+
+#<span class="pl-k">define</span> <span class="pl-en">true</span>  <span class="pl-c1">1</span>
+#<span class="pl-k">define</span> <span class="pl-en">false</span> <span class="pl-c1">0</span>
+#<span class="pl-k">define</span> <span class="pl-en">NULL</span>  ((<span class="pl-k">void</span> *) <span class="pl-c1">0</span>)
+#<span class="pl-k">define</span> <span class="pl-en">align_up</span>(<span class="pl-v">value, align</span>)   __builtin_align_up(value, align)
+#<span class="pl-k">define</span> <span class="pl-en">is_aligned</span>(<span class="pl-v">value, align</span>) __builtin_is_aligned(value, align)
+#<span class="pl-k">define</span> <span class="pl-en">offsetof</span>(<span class="pl-v">type, member</span>)   __builtin_offsetof(type, member)
+#<span class="pl-k">define</span> <span class="pl-en">va_list</span>  __builtin_va_list
+#<span class="pl-k">define</span> <span class="pl-en">va_start</span> __builtin_va_start
+#<span class="pl-k">define</span> <span class="pl-en">va_end</span>   __builtin_va_end
+#<span class="pl-k">define</span> <span class="pl-en">va_arg</span>   __builtin_va_arg
+
+<span class="pl-k">void</span> *<span class="pl-en">memset</span>(<span class="pl-k">void</span> *buf, <span class="pl-k">char</span> c, <span class="pl-c1">size_t</span> n);
+<span class="pl-k">void</span> *<span class="pl-en">memcpy</span>(<span class="pl-k">void</span> *dst, <span class="pl-k">const</span> <span class="pl-k">void</span> *src, <span class="pl-c1">size_t</span> n);
+<span class="pl-k">char</span> *<span class="pl-en">strcpy</span>(<span class="pl-k">char</span> *dst, <span class="pl-k">const</span> <span class="pl-k">char</span> *src);
+<span class="pl-k">int</span> <span class="pl-en">strcmp</span>(<span class="pl-k">const</span> <span class="pl-k">char</span> *s1, <span class="pl-k">const</span> <span class="pl-k">char</span> *s2);
+<span class="pl-k">void</span> <span class="pl-en">printf</span>(<span class="pl-k">const</span> <span class="pl-k">char</span> *fmt, ...);
+</code></pre>
+<p>Most of these are available in the standard library, but we've added a few useful ones:</p>
+<ul>
+<li><code>paddr_t</code>: A type representing physical memory addresses.</li>
+<li><code>vaddr_t</code>: A type representing virtual memory addresses. Equivalent to <code>uintptr_t</code> in the standard library.</li>
+<li><code>align_up</code>: Rounds up <code>value</code> to the nearest multiple of <code>align</code>. <code>align</code> must be a power of 2.</li>
+<li><code>is_aligned</code>: Checks if <code>value</code> is a multiple of <code>align</code>. <code>align</code> must be a power of 2.</li>
+<li><code>offsetof</code>: Returns the offset of a member within a structure (how many bytes from the start of the structure).</li>
+</ul>
+<p><code>align_up</code> and <code>is_aligned</code> are useful when dealing with memory alignment. For example, <code>align_up(0x1234, 0x1000)</code> returns <code>0x2000</code>. Also, <code>is_aligned(0x2000, 0x1000)</code> returns true, but <code>is_aligned(0x2f00, 0x1000)</code> is false.</p>
+<p>The functions starting with <code>__builtin_</code> used in each macro are Clang-specific extensions (built-in functions). See <a href="https://clang.llvm.org/docs/LanguageExtensions.html">Clang built-in functions and macros</a>.</p>
+<blockquote class="callout callout-tip">
+<p>These macros can also be implemented in C without built-in functions. The pure C implementation of <code>offsetof</code> is particularly interesting ;)</p>
+</blockquote>
+<h2 id="memory-operations"><a class="anchor" href="06-libc.html#memory-operations">Memory operations</a></h2>
+<p>Next, we implement the following memory operation functions.</p>
+<p>The <code>memcpy</code> function copies <code>n</code> bytes from <code>src</code> to <code>dst</code>:</p>
+<pre><div class="code-block-title">common.c</div><code class="language-c"><span class="pl-k">void</span> *<span class="pl-en">memcpy</span>(<span class="pl-k">void</span> *dst, <span class="pl-k">const</span> <span class="pl-k">void</span> *src, <span class="pl-c1">size_t</span> n) {
+    <span class="pl-c1">uint8_t</span> *d = (<span class="pl-c1">uint8_t</span> *) dst;
+    <span class="pl-k">const</span> <span class="pl-c1">uint8_t</span> *s = (<span class="pl-k">const</span> <span class="pl-c1">uint8_t</span> *) src;
+    <span class="pl-k">while</span> (n--)
+        *d++ = *s++;
+    <span class="pl-k">return</span> dst;
+}
+</code></pre>
+<p>The <code>memset</code> function fills the first <code>n</code> bytes of <code>buf</code> with <code>c</code>. This function has already been implemented in Chapter 4 for initializing the bss section. Let's move it from <code>kernel.c</code> to <code>common.c</code>:</p>
+<pre><div class="code-block-title">common.c</div><code class="language-c"><span class="pl-k">void</span> *<span class="pl-en">memset</span>(<span class="pl-k">void</span> *buf, <span class="pl-k">char</span> c, <span class="pl-c1">size_t</span> n) {
+    <span class="pl-c1">uint8_t</span> *p = (<span class="pl-c1">uint8_t</span> *) buf;
+    <span class="pl-k">while</span> (n--)
+        *p++ = c;
+    <span class="pl-k">return</span> buf;
+}
+</code></pre>
+<blockquote class="callout callout-tip">
+<p>Sometimes we perform pointer dereferencing and pointer manipulation in a single statement, like <code>*p++ = c;</code>. If we break this down for clarity, it's equivalent to:</p>
+<pre><code class="language-c">*p = c;    <span class="pl-c">// Dereference the pointer</span>
+p = p + <span class="pl-c1">1</span>; <span class="pl-c">// Advance the pointer after the assignment</span>
+</code></pre>
+<p>This is an idiom in C.</p>
+</blockquote>
+<h2 id="string-operations"><a class="anchor" href="06-libc.html#string-operations">String operations</a></h2>
+<p>Let's start with <code>strcpy</code>. This function copies the string from <code>src</code> to <code>dst</code>:</p>
+<pre><div class="code-block-title">common.c</div><code class="language-c"><span class="pl-k">char</span> *<span class="pl-en">strcpy</span>(<span class="pl-k">char</span> *dst, <span class="pl-k">const</span> <span class="pl-k">char</span> *src) {
+    <span class="pl-k">char</span> *d = dst;
+    <span class="pl-k">while</span> (*src)
+        *d++ = *src++;
+    *d = <span class="pl-s"><span class="pl-pds">'</span><span class="pl-cce">\0</span><span class="pl-pds">'</span></span>;
+    <span class="pl-k">return</span> dst;
+}
+</code></pre>
+<blockquote class="callout callout-warning">
+<p>The <code>strcpy</code> function continues copying even if <code>src</code> is longer than the memory area of <code>dst</code>. This can easily lead to bugs and vulnerabilities, so it's generally recommended to use alternative functions instead of <code>strcpy</code>. Never use it in production!</p>
+<p>For simplicity, we'll use <code>strcpy</code> in this book, but if you have the capacity, try implementing and using an alternative function (<code>strcpy_s</code>) instead.</p>
+</blockquote>
+<p>Next function is the <code>strcmp</code> function. It compares <code>s1</code> and <code>s2</code> and returns:</p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>s1</code> == <code>s2</code></td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>s1</code> > <code>s2</code></td>
+<td>Positive value</td>
+</tr>
+<tr>
+<td><code>s1</code> &#x3C; <code>s2</code></td>
+<td>Negative value</td>
+</tr>
+</tbody>
+</table>
+<pre><div class="code-block-title">common.c</div><code class="language-c"><span class="pl-k">int</span> <span class="pl-en">strcmp</span>(<span class="pl-k">const</span> <span class="pl-k">char</span> *s1, <span class="pl-k">const</span> <span class="pl-k">char</span> *s2) {
+    <span class="pl-k">while</span> (*s1 &#x26;&#x26; *s2) {
+        <span class="pl-k">if</span> (*s1 != *s2)
+            <span class="pl-k">break</span>;
+        s1++;
+        s2++;
+    }
+
+    <span class="pl-k">return</span> *(<span class="pl-k">unsigned</span> <span class="pl-k">char</span> *)s1 - *(<span class="pl-k">unsigned</span> <span class="pl-k">char</span> *)s2;
+}
+</code></pre>
+<blockquote class="callout callout-tip">
+<p>The casting to <code>unsigned char *</code> when comparing is done to conform to the <a href="https://www.man7.org/linux/man-pages/man3/strcmp.3.html#:~:text=both%20interpreted%20as%20type%20unsigned%20char">POSIX specification</a>.</p>
+</blockquote>
+<p>The <code>strcmp</code> function is often used to check if two strings are identical. It's a bit counter-intuitive, but the strings are identical when <code>!strcmp(s1, s2)</code> is true (i.e., when the function returns zero):</p>
+<pre><code class="language-c"><span class="pl-k">if</span> (!strcmp(s1, s2))
+    <span class="pl-en">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>s1 == s2<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+<span class="pl-k">else</span>
+    <span class="pl-en">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>s1 != s2<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+</code></pre></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="07-kernel-panic.html">Kernel Panic ⏩</a><a href="05-hello-world.html" class="sm:-order-1">⏪ Hello World!</a></div></footer></body></html>

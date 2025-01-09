@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html><head><title>Process - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - Process</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="font-bold">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><p>A process is an instance of an application. Each process has its own independent execution context and resources such as a virtual address space.</p>
+<blockquote class="callout callout-note">
+<p>Practical operating systems provide the execution context as a separate concept called a <em>"thread"</em>. For simplicity, in this book we'll treat each process as having a single thread.</p>
+</blockquote>
+<h2 id="process-control-block"><a class="anchor" href="10-process.html#process-control-block">Process control block</a></h2>
+<p>The following <code>process</code> structure defines a process object. It's also known as  <em>"Process Control Block (PCB)"</em>.</p>
+<pre><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">PROCS_MAX</span> <span class="pl-c1">8</span>       <span class="pl-c">// Maximum number of processes</span>
+#<span class="pl-k">define</span> <span class="pl-en">PROC_UNUSED</span>   <span class="pl-c1">0</span>   <span class="pl-c">// Unused process control structure</span>
+#<span class="pl-k">define</span> <span class="pl-en">PROC_RUNNABLE</span> <span class="pl-c1">1</span>   <span class="pl-c">// Runnable process</span>
+
+<span class="pl-k">struct</span> process {
+    <span class="pl-k">int</span> pid;             <span class="pl-c">// Process ID</span>
+    <span class="pl-k">int</span> state;           <span class="pl-c">// Process state</span>
+    <span class="pl-c1">vaddr_t</span> sp;          <span class="pl-c">// Stack pointer</span>
+    <span class="pl-c1">uint8_t</span> stack[<span class="pl-c1">8192</span>]; <span class="pl-c">// Kernel stack</span>
+};
+</code></pre>
+<p>The kernel stack contains saved CPU registers, return addresses (where it was called from), and local variables. By preparing a kernel stack for each process, we can implement context switching by saving and restoring CPU registers, and switching the stack pointer.</p>
+<blockquote class="callout callout-tip">
+<p>There is another approach called <em>"single kernel stack"</em>. Instead of having a kernel stack for each process (or thread), there's only single stack per CPU. <a href="https://trustworthy.systems/publications/theses_public/05/Warton%3Abe.abstract">seL4 adopts this method</a>.</p>
+<p>This <em>"where to store the program's context"</em> issue is also a topic discussed in async runtimes of programming languages like Go and Rust. Try searching for <em>"stackless async"</em> if you're interested.</p>
+</blockquote>
+<h2 id="context-switch"><a class="anchor" href="10-process.html#context-switch">Context switch</a></h2>
+<p>Switching the process execution context is called <em>"context switching"</em>. The following <code>switch_context</code> function is the implementation of context switching:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-en">__attribute__</span>((naked)) void switch_context(<span class="pl-c1">uint32_t</span> *prev_sp,
+                                           <span class="pl-c1">uint32_t</span> *next_sp) {
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(
+        <span class="pl-s"><span class="pl-pds">"</span>addi sp, sp, -13 * 4<span class="pl-cce">\n</span><span class="pl-pds">"</span></span> <span class="pl-c">// Allocate stack space for 13 4-byte registers</span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw ra,  0  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>   <span class="pl-c">// Save callee-saved registers only</span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s0,  1  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s1,  2  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s2,  3  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s3,  4  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s4,  5  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s5,  6  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s6,  7  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s7,  8  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s8,  9  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s9,  10 * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s10, 11 * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s11, 12 * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw sp, (a0)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>         <span class="pl-c">// *prev_sp = sp;</span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw sp, (a1)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>         <span class="pl-c">// Switch stack pointer (sp) here</span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw ra,  0  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>  <span class="pl-c">// Restore callee-saved registers only</span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s0,  1  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s1,  2  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s2,  3  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s3,  4  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s4,  5  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s5,  6  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s6,  7  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s7,  8  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s8,  9  * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s9,  10 * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s10, 11 * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s11, 12 * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>addi sp, sp, 13 * 4<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>  <span class="pl-c">// We've popped 13 4-byte registers from the stack</span>
+        <span class="pl-s"><span class="pl-pds">"</span>ret<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+    );
+}
+</code></pre>
+<p><code>switch_context</code> saves the callee-saved registers onto the stack, switches the stack pointer, and then restores the callee-saved registers from the stack.</p>
+<p>Callee-saved registers are registers that the called function must restore before returning. In RISC-V, <code>s0</code> to <code>s11</code> are callee-saved registers. Other registers like <code>a0</code> are caller-saved registers, and already saved on the stack by the caller.</p>
+<blockquote class="callout callout-tip">
+<p>Callee/Caller saved registers are defined in <a href="https://riscv.org/wp-content/uploads/2015/01/riscv-calling.pdf">Calling Convention</a>. Compilers generate code based on this convention.</p>
+</blockquote>
+<p>The following <code>create_process</code> function initializes a process. It takes the entry point as a parameter, and returns a pointer to the created <code>process</code> struct:</p>
+<pre><code class="language-c"><span class="pl-k">struct</span> process procs[PROCS_MAX]; <span class="pl-c">// All process control structures.</span>
+
+<span class="pl-k">struct</span> process *<span class="pl-en">create_process</span>(<span class="pl-c1">uint32_t</span> pc) {
+    <span class="pl-c">// Find an unused process control structure.</span>
+    <span class="pl-k">struct</span> process *proc = <span class="pl-c1">NULL</span>;
+    <span class="pl-k">int</span> i;
+    <span class="pl-k">for</span> (i = <span class="pl-c1">0</span>; i &#x3C; PROCS_MAX; i++) {
+        <span class="pl-k">if</span> (procs[i].<span class="pl-smi">state</span> == PROC_UNUSED) {
+            proc = &#x26;procs[i];
+            <span class="pl-k">break</span>;
+        }
+    }
+
+    <span class="pl-k">if</span> (!proc)
+        <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>no free process slots<span class="pl-pds">"</span></span>);
+
+    <span class="pl-c">// Stack callee-saved registers. These register values will be restored in</span>
+    <span class="pl-c">// the first context switch in switch_context.</span>
+    <span class="pl-c1">uint32_t</span> *sp = (<span class="pl-c1">uint32_t</span> *) &#x26;proc-><span class="pl-smi">stack</span>[<span class="pl-k">sizeof</span>(proc-><span class="pl-smi">stack</span>)];
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s11</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s10</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s9</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s8</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s7</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s6</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s5</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s4</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s3</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s2</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s1</span>
+    *--sp = <span class="pl-c1">0</span>;                      <span class="pl-c">// s0</span>
+    *--sp = (<span class="pl-c1">uint32_t</span>) pc;          <span class="pl-c">// ra</span>
+
+    <span class="pl-c">// Initialize fields.</span>
+    proc-><span class="pl-smi">pid</span> = i + <span class="pl-c1">1</span>;
+    proc-><span class="pl-smi">state</span> = PROC_RUNNABLE;
+    proc-><span class="pl-smi">sp</span> = (<span class="pl-c1">uint32_t</span>) sp;
+    <span class="pl-k">return</span> proc;
+}
+</code></pre>
+<h2 id="testing-context-switch"><a class="anchor" href="10-process.html#testing-context-switch">Testing context switch</a></h2>
+<p>We have implemented the most basic function of processes - concurrent execution of multiple programs. Let's create two processes:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">struct</span> process *proc_a;
+<span class="pl-k">struct</span> process *proc_b;
+
+<span class="pl-k">void</span> <span class="pl-en">proc_a_entry</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>starting process A<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+    <span class="pl-k">while</span> (<span class="pl-c1">1</span>) {
+        <span class="pl-c1">putchar</span>(<span class="pl-s"><span class="pl-pds">'</span>A<span class="pl-pds">'</span></span>);
+        <span class="pl-c1">switch_context</span>(&#x26;proc_a-><span class="pl-smi">sp</span>, &#x26;proc_b-><span class="pl-smi">sp</span>);
+
+        <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">0</span>; i &#x3C; <span class="pl-c1">30000000</span>; i++)
+            <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>nop<span class="pl-pds">"</span></span>);
+    }
+}
+
+<span class="pl-k">void</span> <span class="pl-en">proc_b_entry</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>starting process B<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+    <span class="pl-k">while</span> (<span class="pl-c1">1</span>) {
+        <span class="pl-c1">putchar</span>(<span class="pl-s"><span class="pl-pds">'</span>B<span class="pl-pds">'</span></span>);
+        <span class="pl-c1">switch_context</span>(&#x26;proc_b-><span class="pl-smi">sp</span>, &#x26;proc_a-><span class="pl-smi">sp</span>);
+
+        <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">0</span>; i &#x3C; <span class="pl-c1">30000000</span>; i++)
+            <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>nop<span class="pl-pds">"</span></span>);
+    }
+}
+
+<span class="pl-k">void</span> <span class="pl-en">kernel_main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">memset</span>(__bss, <span class="pl-c1">0</span>, (<span class="pl-c1">size_t</span>) __bss_end - (<span class="pl-c1">size_t</span>) __bss);
+
+    <span class="pl-c1">WRITE_CSR</span>(stvec, (<span class="pl-c1">uint32_t</span>) kernel_entry);
+
+    <span class="pl-c">/* new */</span>
+    proc_a = <span class="pl-c1">create_process</span>((<span class="pl-c1">uint32_t</span>) proc_a_entry);
+    proc_b = <span class="pl-c1">create_process</span>((<span class="pl-c1">uint32_t</span>) proc_b_entry);
+    <span class="pl-c1">proc_a_entry</span>();
+
+    <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>unreachable here!<span class="pl-pds">"</span></span>);
+}
+</code></pre>
+<p>The <code>proc_a_entry</code> function and <code>proc_b_entry</code> function are the entry points for Process A and Process B respectively. After displaying a single character using the <code>putchar</code> function, they switch context to the other process using the <code>switch_context</code> function.</p>
+<p><code>nop</code> instruction called by <code>__asm__ __volatile__("nop")</code> is a "do nothing" instruction. By including a loop that repeats this instruction for a while, we prevent the character output from becoming too fast, which would make the terminal unresponsive.</p>
+<p>Now, let's try! The startup messages will be displayed once each, and then "ABABAB..." lasts forever:</p>
+<pre><code class="language-plain">$ ./run.sh
+
+starting process A
+Astarting process B
+BABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAQE
+</code></pre>
+<h2 id="scheduler"><a class="anchor" href="10-process.html#scheduler">Scheduler</a></h2>
+<p>In the previous experiment, we directly called the <code>switch_context</code> function to specify the "next process to execute". However, this method becomes complicated when determining which process to switch to next as the number of processes increases. To solve the issue, let's implement a <em>"scheduler"</em>, a kernel prgoram which decides the next process.</p>
+<p>The following <code>yield</code> function is the implementation of the scheduler:</p>
+<blockquote class="callout callout-tip">
+<p>The word "yield" is often used as the name for an API which allows giving up the CPU to another process voluntarily.</p>
+</blockquote>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">struct</span> process *current_proc; <span class="pl-c">// Currently running process</span>
+<span class="pl-k">struct</span> process *idle_proc;    <span class="pl-c">// Idle process</span>
+
+<span class="pl-k">void</span> <span class="pl-en">yield</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c">// Search for a runnable process</span>
+    <span class="pl-k">struct</span> process *next = idle_proc;
+    <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">0</span>; i &#x3C; PROCS_MAX; i++) {
+        <span class="pl-k">struct</span> process *proc = &#x26;procs[(current_proc-><span class="pl-smi">pid</span> + i) % PROCS_MAX];
+        <span class="pl-k">if</span> (proc-><span class="pl-smi">state</span> == PROC_RUNNABLE &#x26;&#x26; proc-><span class="pl-smi">pid</span> > <span class="pl-c1">0</span>) {
+            next = proc;
+            <span class="pl-k">break</span>;
+        }
+    }
+
+    <span class="pl-c">// If there's no runnable process other than the current one, return and continue processing</span>
+    <span class="pl-k">if</span> (next == current_proc)
+        <span class="pl-k">return</span>;
+
+    <span class="pl-c">// Context switch</span>
+    <span class="pl-k">struct</span> process *prev = current_proc;
+    current_proc = next;
+    <span class="pl-c1">switch_context</span>(&#x26;prev-><span class="pl-smi">sp</span>, &#x26;next-><span class="pl-smi">sp</span>);
+}
+</code></pre>
+<p>Here, we introduce two global variables. <code>current_proc</code> points to the currently running process. <code>idle_proc</code> refers to the idle process, which is "the process to run when there are no runnable processes". The <code>idle_proc</code> is created at startup as a process with process ID <code>-1</code>, as shown below:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">kernel_main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">memset</span>(__bss, <span class="pl-c1">0</span>, (<span class="pl-c1">size_t</span>) __bss_end - (<span class="pl-c1">size_t</span>) __bss);
+
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span><span class="pl-cce">\n\n</span><span class="pl-pds">"</span></span>);
+
+    <span class="pl-c1">WRITE_CSR</span>(stvec, (<span class="pl-c1">uint32_t</span>) kernel_entry);
+
+    <span class="pl-c">/* new */</span>
+    idle_proc = <span class="pl-c1">create_process</span>((<span class="pl-c1">uint32_t</span>) <span class="pl-c1">NULL</span>);
+    idle_proc-><span class="pl-smi">pid</span> = -<span class="pl-c1">1</span>; <span class="pl-c">// idle</span>
+    current_proc = idle_proc;
+
+    <span class="pl-c">/* new */</span>
+    proc_a = <span class="pl-c1">create_process</span>((<span class="pl-c1">uint32_t</span>) proc_a_entry);
+    proc_b = <span class="pl-c1">create_process</span>((<span class="pl-c1">uint32_t</span>) proc_b_entry);
+
+    <span class="pl-c">/* new */</span>
+    <span class="pl-c1">yield</span>();
+    <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>switched to idle process<span class="pl-pds">"</span></span>);
+}
+</code></pre>
+<p>The key point of this initialization process is <code>current_proc = idle_proc</code>. This ensures that the execution context of the boot process is saved and restored as that of the idle process. During the first call to the <code>yield</code> function, it switches from the idle process to process A, and when switching back to the idle process, it behaves as if returning from this <code>yield</code> function call.</p>
+<p>Lastly, modify <code>proc_a_entry</code> and <code>proc_b_entry</code> as follows to call the <code>yield</code> function instead of directly calling the <code>switch_context</code> function:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">proc_a_entry</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>starting process A<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+    <span class="pl-k">while</span> (<span class="pl-c1">1</span>) {
+        <span class="pl-c1">putchar</span>(<span class="pl-s"><span class="pl-pds">'</span>A<span class="pl-pds">'</span></span>);
+        <span class="pl-c1">yield</span>(); <span class="pl-c">/* new */</span>
+
+        <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">0</span>; i &#x3C; <span class="pl-c1">30000000</span>; i++)
+            <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>nop<span class="pl-pds">"</span></span>);
+    }
+}
+
+<span class="pl-k">void</span> <span class="pl-en">proc_b_entry</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>starting process B<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+    <span class="pl-k">while</span> (<span class="pl-c1">1</span>) {
+        <span class="pl-c1">putchar</span>(<span class="pl-s"><span class="pl-pds">'</span>B<span class="pl-pds">'</span></span>);
+        <span class="pl-c1">yield</span>(); <span class="pl-c">/* new */</span>
+
+        <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">0</span>; i &#x3C; <span class="pl-c1">30000000</span>; i++)
+            <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>nop<span class="pl-pds">"</span></span>);
+    }
+}
+</code></pre>
+<p>If "A" and "B" are printed as before, it works perfectly!</p>
+<h2 id="changes-in-the-exception-handler"><a class="anchor" href="10-process.html#changes-in-the-exception-handler">Changes in the exception handler</a></h2>
+<p>In the exception handler, it saves the execution state onto the stack. However, since we now use separate kernel stacks for each process, we need to update it slightly.</p>
+<p>First, set the initial value of the kernel stack for the currently executing process in the <code>sscratch</code> register during process switching.</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">yield</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c">/* omitted */</span>
+
+    <span class="pl-c">/* new */</span>
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(
+        <span class="pl-s"><span class="pl-pds">"</span>csrw sscratch, %[sscratch]<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        :
+        : [sscratch] <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span> ((<span class="pl-c1">uint32_t</span>) &#x26;next-><span class="pl-smi">stack</span>[<span class="pl-k">sizeof</span>(next-><span class="pl-smi">stack</span>)])
+    );
+
+    <span class="pl-c">// Context switch</span>
+    <span class="pl-k">struct</span> process *prev = current_proc;
+    current_proc = next;
+    <span class="pl-c1">switch_context</span>(&#x26;prev-><span class="pl-smi">sp</span>, &#x26;next-><span class="pl-smi">sp</span>);
+}
+</code></pre>
+<p>Since the stack pointer extends towards lower addresses, we set the address at the <code>sizeof(next->stack)</code>th byte as the initial value of the kernel stack.</p>
+<p>The modifications to the exception handler are as follows:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">kernel_entry</span>(<span class="pl-k">void</span>) {
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(
+        <span class="pl-c">// Retrieve the kernel stack of the running process from sscratch (new)</span>
+        <span class="pl-s"><span class="pl-pds">"</span>csrrw sp, sscratch, sp<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+
+        <span class="pl-s"><span class="pl-pds">"</span>addi sp, sp, -4 * 31<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw ra,  4 * 0(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw gp,  4 * 1(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw tp,  4 * 2(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t0,  4 * 3(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t1,  4 * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t2,  4 * 5(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t3,  4 * 6(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t4,  4 * 7(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t5,  4 * 8(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t6,  4 * 9(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a0,  4 * 10(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a1,  4 * 11(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a2,  4 * 12(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a3,  4 * 13(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a4,  4 * 14(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a5,  4 * 15(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a6,  4 * 16(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a7,  4 * 17(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s0,  4 * 18(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s1,  4 * 19(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s2,  4 * 20(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s3,  4 * 21(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s4,  4 * 22(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s5,  4 * 23(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s6,  4 * 24(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s7,  4 * 25(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s8,  4 * 26(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s9,  4 * 27(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s10, 4 * 28(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s11, 4 * 29(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+
+        <span class="pl-c">// Retrieve and save the sp at the time of exception (new)</span>
+        <span class="pl-s"><span class="pl-pds">"</span>csrr a0, sscratch<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a0,  4 * 30(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+
+        <span class="pl-c">// Reset the kernel stack (new)</span>
+        <span class="pl-s"><span class="pl-pds">"</span>addi a0, sp, 4 * 31<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>csrw sscratch, a0<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+
+        <span class="pl-s"><span class="pl-pds">"</span>mv a0, sp<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>call handle_trap<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+</code></pre>
+<p>The first <code>csrrw</code> instruction is a swap operation in short:</p>
+<pre><code>tmp = sp;
+sp = sscratch;
+sscratch = tmp;
+</code></pre>
+<p>Thus, <code>sp</code> now points to the <em>kernel</em> (not <em>user</em>) stack of the currently running process. Also, <code>sscratch</code> now holds the original value of <code>sp</code> (user stack) at the time of the exception.</p>
+<p>After saving other registers onto the kernel stack, We restore the original <code>sp</code> value from <code>sscratch</code> and save it onto the kernel stack. Then, calculate the initial value of <code>sscratch</code> and restore it.</p>
+<p>The key point here is that each process has its own independent kernel stack. By switching the contents of <code>sscratch</code> during context switching, we can resume the execution of the process from the point where it was interrupted, as if nothing had happened.</p>
+<blockquote class="callout callout-tip">
+<p>We've implemented the context switching mechanism for the "kernel" stack. The stack used by applications (so-called <em>user stack</em>) will be allocated separately from the kernel stack. This will be implemented in later chapters.</p>
+</blockquote>
+<h2 id="appendix-why-do-we-reset-the-stack-pointer"><a class="anchor" href="10-process.html#appendix-why-do-we-reset-the-stack-pointer">Appendix: Why do we reset the stack pointer?</a></h2>
+<p>In the previous section, you might have wondered why we need to switch to the kernel stack by tweaking <code>sscratch</code>.</p>
+<p>This is because we must not trust the stack pointer at the time of exception. In the exception handler, we need to consider the following three patterns:</p>
+<ol>
+<li>An exception occurred in kernel mode.</li>
+<li>An exception occurred in kernel mode, when handling another exception (nested exception).</li>
+<li>An exception occurred in user mode.</li>
+</ol>
+<p>In case (1), there's generally no problem even if we don't reset the stack pointer. In case (2), we would overwrite the saved area, but our implementation triggers a kernel panic on nested exceptions, so it's OK.</p>
+<p>The problem is with case (3). In this case, <code>sp</code> points to the "user (application) stack area". If we implement it to use (trust) <code>sp</code> as is, it could lead to a vulnerability that crashes the kernel.</p>
+<p>Let's experiment with this by running the following application after completing all the implementations up to Chapter 17 in this book:</p>
+<pre><code class="language-c"><span class="pl-c">// An example of applications</span>
+#<span class="pl-k">include</span> <span class="pl-s"><span class="pl-pds">"</span>user.h<span class="pl-pds">"</span></span>
+
+<span class="pl-k">void</span> <span class="pl-en">main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(
+        <span class="pl-s"><span class="pl-pds">"</span>li sp, 0xdeadbeef<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>  <span class="pl-c">// Set an invalid address to sp</span>
+        <span class="pl-s"><span class="pl-pds">"</span>unimp<span class="pl-pds">"</span></span>                <span class="pl-c">// Trigger an exception</span>
+    );
+}
+</code></pre>
+<p>If we run this without applying the modifications from this chapter (i.e. restoring the kernel stack from <code>sscratch</code>), the kernel hangs without displaying anything, and you'll see the following output in QEMU's log:</p>
+<pre><code>epc:0x0100004e, tval:0x00000000, desc=illegal_instruction &#x3C;- unimp triggers the trap handler
+epc:0x802009dc, tval:0xdeadbe73, desc=store_page_fault &#x3C;- an aborted write to the stack  (0xdeadbeef)
+epc:0x802009dc, tval:0xdeadbdf7, desc=store_page_fault &#x3C;- an aborted write to the stack  (0xdeadbeef) (2)
+epc:0x802009dc, tval:0xdeadbd7b, desc=store_page_fault &#x3C;- an aborted write to the stack  (0xdeadbeef) (3)
+epc:0x802009dc, tval:0xdeadbcff, desc=store_page_fault &#x3C;- an aborted write to the stack  (0xdeadbeef) (4)
+...
+</code></pre>
+<p>First, an invalid instruction exception occurs with the <code>unimp</code> pseudo-instruction, transitioning to the kernel's trap handler. However, because the stack pointer points to an unmapped address (<code>0xdeadbeef</code>), an exception occurs when trying to save registers, jumping back to the beginning of the trap handler. This becomes an infinite loop, causing the kernel to hang. To prevent this, we need to retrieve a trusted stack area from <code>sscratch</code>.</p>
+<p>Another solution is to have multiple exception handlers. In the RISC-V version of xv6 (a famous educational UNIX-like OS), there are separate exception handlers for cases (1) and (2) (<a href="https://github.com/mit-pdos/xv6-riscv/blob/f5b93ef12f7159f74f80f94729ee4faabe42c360/kernel/kernelvec.S#L13-L14"><code>kernelvec</code></a>) and for case (3) (<a href="https://github.com/mit-pdos/xv6-riscv/blob/f5b93ef12f7159f74f80f94729ee4faabe42c360/kernel/trampoline.S#L74-L75"><code>uservec</code></a>). In the former case, it inherits the stack pointer at the time of the exception, and in the latter case, it retrieves a separate kernel stack. The trap handler is <a href="https://github.com/mit-pdos/xv6-riscv/blob/f5b93ef12f7159f74f80f94729ee4faabe42c360/kernel/trap.c#L44-L46">switched</a> when entering and exiting the kernel.</p>
+<blockquote class="callout callout-tip">
+<p>In Fuchsia, an OS developed by Google, there was a case where an API allowing arbitrary program counter values to be set from the user became <a href="https://blog.quarkslab.com/playing-around-with-the-fuchsia-operating-system.html">a vulnerability</a>. Not trusting input from users (applications) is an extremely important habit in kernel development.</p>
+</blockquote>
+<h2 id="next-steps"><a class="anchor" href="10-process.html#next-steps">Next Steps</a></h2>
+<p>We have now achieved the ability to run multiple processes concurrently, realizing a multi-tasking OS.</p>
+<p>However, as it stands, processes can freely read and write to the kernel's memory space. It's super insecure! In the coming chapters, we'll look at how to safely run applications, in other words, how to isolate the kernel and applications.</p></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="11-page-table.html">Page Table ⏩</a><a href="09-memory-allocation.html" class="sm:-order-1">⏪ Memory Allocation</a></div></footer></body></html>

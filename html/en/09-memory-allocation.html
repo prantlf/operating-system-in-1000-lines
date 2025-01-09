@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html><head><title>Memory Allocation - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - Memory Allocation</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="font-bold">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><p>In this chapter, we'll implement a simple memory allocator.</p>
+<h2 id="revisiting-the-linker-script"><a class="anchor" href="09-memory-allocation.html#revisiting-the-linker-script">Revisiting the linker script</a></h2>
+<p>Before implementing a memory allocator, let's define the memory regions to be manged by the allocator:</p>
+<pre><div class="code-block-title">kernel.ld</div><code class="language-plain">    . = ALIGN(4);
+    . += 128 * 1024; /* 128KB */
+    __stack_top = .;
+
+    /* new */
+    . = ALIGN(4096);
+    __free_ram = .;
+    . += 64 * 1024 * 1024; /* 64MB */
+    __free_ram_end = .;
+}
+</code></pre>
+<p>This adds two new symbols: <code>__free_ram</code> and <code>__free_ram_end</code>. This defines a memory are after the stack space . The size of the space (64MB) is an arbitrary value and <code>. = ALIGN(4096)</code> ensures that it's aligned to a 4KB boundary.</p>
+<p>By defining this in the linker script instead of hardcoding addresses, the linker can determine the position to avoid overlapping with the kernel's static data.</p>
+<blockquote class="callout callout-tip">
+<p>Practical operating systems on x86-64 determine available memory regions by obtaining information from hardware at boot time (for example, UEFI's <code>GetMemoryMap</code>).</p>
+</blockquote>
+<h2 id="the-worlds-simplest-memory-allocation-algorithm"><a class="anchor" href="09-memory-allocation.html#the-worlds-simplest-memory-allocation-algorithm">The world's simplest memory allocation algorithm</a></h2>
+<p>Let's implement a function to allocate memory dynamically. Instead of allocating in bytes like <code>malloc</code>, it allocates in a larger unit called <em>"pages"</em>. 1 page is typically 4KB (4096 bytes).</p>
+<blockquote class="callout callout-tip">
+<p>4KB = 4096 = 0x1000 (hexadecimal). Thus, page-aligned addresses look nicely aligned in hexadecimal.</p>
+</blockquote>
+<p>The following <code>alloc_pages</code> function dynamically allocates <code>n</code> pages of memory and returns the starting address:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">extern</span> <span class="pl-k">char</span> __free_ram[], __free_ram_end[];
+
+<span class="pl-c1">paddr_t</span> <span class="pl-en">alloc_pages</span>(<span class="pl-c1">uint32_t</span> n) {
+    <span class="pl-k">static</span> <span class="pl-c1">paddr_t</span> next_paddr = (<span class="pl-c1">paddr_t</span>) __free_ram;
+    <span class="pl-c1">paddr_t</span> paddr = next_paddr;
+    next_paddr += n * PAGE_SIZE;
+
+    <span class="pl-k">if</span> (next_paddr > (<span class="pl-c1">paddr_t</span>) __free_ram_end)
+        <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>out of memory<span class="pl-pds">"</span></span>);
+
+    <span class="pl-c1">memset</span>((<span class="pl-k">void</span> *) paddr, <span class="pl-c1">0</span>, n * PAGE_SIZE);
+    <span class="pl-k">return</span> paddr;
+}
+</code></pre>
+<p><code>PAGE_SIZE</code> represents the size of one page. Define it in <code>common.h</code>:</p>
+<pre><div class="code-block-title">common.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">PAGE_SIZE</span> <span class="pl-c1">4096</span>
+</code></pre>
+<p>You will find the following key points:</p>
+<ul>
+<li><code>next_paddr</code> is defined as a <code>static</code> variable. This means, unlike local variables, its value is retained between function calls. That is, it behaves like a global variable.</li>
+<li><code>next_paddr</code> points to the start address of the "next area to be allocated" (free area). When allocating, <code>next_paddr</code> is advanced by the size being allocated.</li>
+<li><code>next_paddr</code> initially holds the address of <code>__free_ram</code>. This means memory is allocated sequentially starting from <code>__free_ram</code>.</li>
+<li><code>__free_ram</code> is placed on a 4KB boundary due to <code>ALIGN(4096)</code> in the linker script. Therefore, the <code>alloc_pages</code> function always returns an address aligned to 4KB.</li>
+<li>If it tries to allocate beyond <code>__free_ram_end</code>, in other words, if it runs out of memory, a kernel panic occurs.</li>
+<li>The <code>memset</code> function ensures that the allocated memory area is always filled with zeroes. This is to avoid hard-to-debug issues caused by uninitialized memory.</li>
+</ul>
+<p>Isn't it simple? However, there is a big problem with this memory allocation algorithm: allocated memory cannot be freed! That said, it's good enough for our simple hobby OS.</p>
+<blockquote class="callout callout-tip">
+<p>This algorithm is known as <strong>Bump allocator</strong> or <strong>Linear allocator</strong>, and it's actually used in scenarios where deallocation is not necessary. It's an attractive allocation algorithm that can be implemented in just a few lines and is very fast.</p>
+<p>When implementing deallocation, it's common to use a bitmap-based algorithm or use an algorithm called the buddy system.</p>
+</blockquote>
+<h2 id="lets-try-memory-allocation"><a class="anchor" href="09-memory-allocation.html#lets-try-memory-allocation">Let's try memory allocation</a></h2>
+<p>Let's test the memory allocation function we've implemented. Add some code to <code>kernel_main</code>:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">kernel_main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">memset</span>(__bss, <span class="pl-c1">0</span>, (<span class="pl-c1">size_t</span>) __bss_end - (<span class="pl-c1">size_t</span>) __bss);
+
+    <span class="pl-c">/* new */</span>
+    <span class="pl-c1">paddr_t</span> paddr0 = <span class="pl-c1">alloc_pages</span>(<span class="pl-c1">2</span>);
+    <span class="pl-c1">paddr_t</span> paddr1 = <span class="pl-c1">alloc_pages</span>(<span class="pl-c1">1</span>);
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>alloc_pages test: paddr0=<span class="pl-c1">%x</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, paddr0);
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>alloc_pages test: paddr1=<span class="pl-c1">%x</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, paddr1);
+
+    <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>booted!<span class="pl-pds">"</span></span>);
+}
+</code></pre>
+<p>Verify that the first address (<code>paddr0</code>) matches the address of <code>__free_ram</code>, and that the next address (<code>paddr1</code>) matches an address 8KB after <code>paddr0</code>:</p>
+<pre><code class="language-plain">$ ./run.sh
+Hello World!
+alloc_pages test: paddr0=80221000
+alloc_pages test: paddr1=80223000
+</code></pre>
+<pre><code class="language-plain">$ llvm-nm kernel.elf | grep __free_ram
+80221000 R __free_ram
+84221000 R __free_ram_end
+</code></pre></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="10-process.html">Process ⏩</a><a href="08-exception.html" class="sm:-order-1">⏪ Exception</a></div></footer></body></html>

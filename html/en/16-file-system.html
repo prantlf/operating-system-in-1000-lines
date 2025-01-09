@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html><head><title>File System - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - File System</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="font-bold">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><p>You've done a great job so far! You've implemented a process, a shell, memory management, and a disk driver. Let's finish up by implementing a file system.</p>
+<h2 id="tar-as-file-system"><a class="anchor" href="16-file-system.html#tar-as-file-system">Tar as file system</a></h2>
+<p>In this book, we'll take an interesting approach to implement a file system: using a tar file as our file system.</p>
+<p>Tar is an archive format that can contain multiple files. It contains file contents, filenames, creation dates, and other information necessary for a file system. Compared to common file system formats like FAT or ext2, tar has a much simpler data structure. Additionally, you can manipulate the file system image using the  tar command which you are already familiar with. Isn't it an ideal file format for educational purposes?</p>
+<blockquote class="callout callout-tip">
+<p>Nowadays, tar is used as a ZIP alternative, but originally it was born as sort of file system for magnetic tape. We can use it as a file system as we do in this chapter, however, you'll notice that it is not suitable for random access. <a href="https://en.wikipedia.org/wiki/Design_of_the_FAT_file_system">The design of FAT file system</a> would be fun to read.</p>
+</blockquote>
+<h2 id="create-a-disk-image-tar-file"><a class="anchor" href="16-file-system.html#create-a-disk-image-tar-file">Create a disk image (tar file)</a></h2>
+<p>Let's start by preparing the contents of our file system. Create a directory called <code>disk</code> and add some files to it. Name one of them <code>hello.txt</code>:</p>
+<pre><code class="language-plain">$ mkdir disk
+$ vim disk/hello.txt
+$ vim disk/meow.txt
+</code></pre>
+<p>Add a command to the build script to create a tar file and pass it as a disk image to QEMU:</p>
+<pre><div class="code-block-title">run.sh</div><code class="language-bash">(cd disk <span class="pl-k">&#x26;&#x26;</span> tar cf ../disk.tar --format=ustar ./<span class="pl-k">*</span>.txt)                          <span class="pl-c"># new</span>
+
+<span class="pl-smi">$QEMU</span> -machine virt -bios default -nographic -serial mon:stdio --no-reboot \
+    -d unimp,guest_errors,int,cpu_reset -D qemu.log \
+    -drive id=drive0,file=disk.tar,format=raw,if=none <span class="pl-cce">\ </span>                        <span class="pl-c"># modified</span>
+    -device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 \
+    -kernel kernel.elf
+</code></pre>
+<p>The <code>tar</code> command options used here are:</p>
+<ul>
+<li><code>cf</code>: Create tar file.</li>
+<li><code>--format=ustar</code>: Create in ustar format.</li>
+</ul>
+<blockquote class="callout callout-tip">
+<p>The parentheses <code>(...)</code> create a subshell so that <code>cd</code> doesn't affect in other parts of the script.</p>
+</blockquote>
+<h2 id="tar-file-structure"><a class="anchor" href="16-file-system.html#tar-file-structure">Tar file structure</a></h2>
+<p>A tar file has the following structure:</p>
+<pre><code class="language-plain">+----------------+
+|   tar header   |
++----------------+
+|   file data    |
++----------------+
+|   tar header   |
++----------------+
+|   file data    |
++----------------+
+|      ...       |
+</code></pre>
+<p>In summary, a tar file is essentially a series of "tar header" and "file data" pair, one pair for each file. There are several types of tar formats, but we will use the <strong>ustar format</strong> (<a href="https://en.wikipedia.org/wiki/Tar_(computing)#UStar_format">Wikipedia</a>).</p>
+<p>We use this file structure as the data structure for our file system. Comparing this to a real file system would be very interesting and educational.</p>
+<h2 id="reading-the-file-system"><a class="anchor" href="16-file-system.html#reading-the-file-system">Reading the file system</a></h2>
+<p>First, define the data structures related to tar file system in <code>kernel.h</code>:</p>
+<pre><div class="code-block-title">kernel.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">FILES_MAX</span>      <span class="pl-c1">2</span>
+#<span class="pl-k">define</span> <span class="pl-en">DISK_MAX_SIZE</span>  <span class="pl-en">align_up</span>(<span class="pl-k">sizeof</span>(<span class="pl-k">struct</span> file) * FILES_MAX, SECTOR_SIZE)
+
+struct tar_header {
+    <span class="pl-k">char</span> name[<span class="pl-c1">100</span>];
+    <span class="pl-k">char</span> mode[<span class="pl-c1">8</span>];
+    <span class="pl-k">char</span> uid[<span class="pl-c1">8</span>];
+    <span class="pl-k">char</span> gid[<span class="pl-c1">8</span>];
+    <span class="pl-k">char</span> size[<span class="pl-c1">12</span>];
+    <span class="pl-k">char</span> mtime[<span class="pl-c1">12</span>];
+    <span class="pl-k">char</span> checksum[<span class="pl-c1">8</span>];
+    <span class="pl-k">char</span> type;
+    <span class="pl-k">char</span> linkname[<span class="pl-c1">100</span>];
+    <span class="pl-k">char</span> magic[<span class="pl-c1">6</span>];
+    <span class="pl-k">char</span> version[<span class="pl-c1">2</span>];
+    <span class="pl-k">char</span> uname[<span class="pl-c1">32</span>];
+    <span class="pl-k">char</span> gname[<span class="pl-c1">32</span>];
+    <span class="pl-k">char</span> devmajor[<span class="pl-c1">8</span>];
+    <span class="pl-k">char</span> devminor[<span class="pl-c1">8</span>];
+    <span class="pl-k">char</span> prefix[<span class="pl-c1">155</span>];
+    <span class="pl-k">char</span> padding[<span class="pl-c1">12</span>];
+    <span class="pl-k">char</span> data[];      <span class="pl-c">// Array pointing to the data area following the header</span>
+                      <span class="pl-c">// (flexible array member)</span>
+} __attribute__((packed));
+
+<span class="pl-k">struct</span> file {
+    <span class="pl-k">bool</span> in_use;      <span class="pl-c">// Indicates if this file entry is in use</span>
+    <span class="pl-k">char</span> name[<span class="pl-c1">100</span>];   <span class="pl-c">// File name</span>
+    <span class="pl-k">char</span> data[<span class="pl-c1">1024</span>];  <span class="pl-c">// File content</span>
+    <span class="pl-c1">size_t</span> size;      <span class="pl-c">// File size</span>
+};
+</code></pre>
+<p>In our file system implementation, all files are read from the disk into memory at boot. <code>FILES_MAX</code> defines the maximum number of files that can be loaded, and <code>DISK_MAX_SIZE</code> specifies the maximum size of the disk image.</p>
+<p>Next, let's read the whole disk into memory in <code>kernel.c</code>:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">struct</span> file files[FILES_MAX];
+<span class="pl-c1">uint8_t</span> disk[DISK_MAX_SIZE];
+
+<span class="pl-k">int</span> <span class="pl-en">oct2int</span>(<span class="pl-k">char</span> *oct, <span class="pl-k">int</span> len) {
+    <span class="pl-k">int</span> dec = <span class="pl-c1">0</span>;
+    <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">0</span>; i &#x3C; len; i++) {
+        <span class="pl-k">if</span> (oct[i] &#x3C; <span class="pl-s"><span class="pl-pds">'</span>0<span class="pl-pds">'</span></span> || oct[i] > <span class="pl-s"><span class="pl-pds">'</span>7<span class="pl-pds">'</span></span>)
+            <span class="pl-k">break</span>;
+
+        dec = dec * <span class="pl-c1">8</span> + (oct[i] - <span class="pl-s"><span class="pl-pds">'</span>0<span class="pl-pds">'</span></span>);
+    }
+    <span class="pl-k">return</span> dec;
+}
+
+<span class="pl-k">void</span> <span class="pl-en">fs_init</span>(<span class="pl-k">void</span>) {
+    <span class="pl-k">for</span> (<span class="pl-k">unsigned</span> sector = <span class="pl-c1">0</span>; sector &#x3C; <span class="pl-k">sizeof</span>(disk) / SECTOR_SIZE; sector++)
+        <span class="pl-c1">read_write_disk</span>(&#x26;disk[sector * SECTOR_SIZE], sector, <span class="pl-c1">false</span>);
+
+    <span class="pl-k">unsigned</span> off = <span class="pl-c1">0</span>;
+    <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">0</span>; i &#x3C; FILES_MAX; i++) {
+        <span class="pl-k">struct</span> tar_header *header = (<span class="pl-k">struct</span> tar_header *) &#x26;disk[off];
+        <span class="pl-k">if</span> (header-><span class="pl-smi">name</span>[<span class="pl-c1">0</span>] == <span class="pl-s"><span class="pl-pds">'</span><span class="pl-cce">\0</span><span class="pl-pds">'</span></span>)
+            <span class="pl-k">break</span>;
+
+        <span class="pl-k">if</span> (<span class="pl-c1">strcmp</span>(header-><span class="pl-smi">magic</span>, <span class="pl-s"><span class="pl-pds">"</span>ustar<span class="pl-pds">"</span></span>) != <span class="pl-c1">0</span>)
+            <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>invalid tar header: magic=<span class="pl-cce">\"</span><span class="pl-c1">%s</span><span class="pl-cce">\"</span><span class="pl-pds">"</span></span>, header-><span class="pl-smi">magic</span>);
+
+        <span class="pl-k">int</span> filesz = <span class="pl-c1">oct2int</span>(header-><span class="pl-smi">size</span>, <span class="pl-k">sizeof</span>(header-><span class="pl-smi">size</span>));
+        <span class="pl-k">struct</span> file *file = &#x26;files[i];
+        file-><span class="pl-smi">in_use</span> = <span class="pl-c1">true</span>;
+        <span class="pl-c1">strcpy</span>(file-><span class="pl-smi">name</span>, header-><span class="pl-smi">name</span>);
+        <span class="pl-c1">memcpy</span>(file-><span class="pl-smi">data</span>, header-><span class="pl-smi">data</span>, filesz);
+        file-><span class="pl-smi">size</span> = filesz;
+        <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>file: <span class="pl-c1">%s</span>, size=<span class="pl-c1">%d</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, file-><span class="pl-smi">name</span>, file-><span class="pl-smi">size</span>);
+
+        off += <span class="pl-c1">align_up</span>(<span class="pl-k">sizeof</span>(<span class="pl-k">struct</span> tar_header) + filesz, SECTOR_SIZE);
+    }
+}
+</code></pre>
+<p>In this function, we first use the <code>read_write_disk</code> function to load the disk image into a temporary buffer (<code>disk</code> variable). The <code>disk</code> variable is declared as a static variable instead of a local (stack) variable. This is because the stack has limited size, and it's preferable to avoid using it for large data areas.</p>
+<p>After loading the disk contents, we sequentially copy them into the <code>files</code> variable entries. Note that <strong>the numbers in the tar header are in octal format</strong>. It's very confusing because it looks like decimials. The <code>oct2int</code> function is used to convert these octal string values to integers.</p>
+<p>Lastly, make sure to call the <code>fs_init</code> function after initializing the virtio-blk device (<code>virtio_blk_init</code>) in <code>kernel_main</code>:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">kernel_main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">memset</span>(__bss, <span class="pl-c1">0</span>, (<span class="pl-c1">size_t</span>) __bss_end - (<span class="pl-c1">size_t</span>) __bss);
+    <span class="pl-c1">WRITE_CSR</span>(stvec, (<span class="pl-c1">uint32_t</span>) kernel_entry);
+    <span class="pl-c1">virtio_blk_init</span>();
+    <span class="pl-c1">fs_init</span>();
+
+    <span class="pl-c">/* omitted */</span>
+}
+</code></pre>
+<h2 id="test-file-reads"><a class="anchor" href="16-file-system.html#test-file-reads">Test file reads</a></h2>
+<p>Let's try! It should print the file names and their sizes in <code>disk</code> directory:</p>
+<pre><code class="language-plain">$ ./run.sh
+
+virtio-blk: capacity is 2560 bytes
+file: world.txt, size=0
+file: hello.txt, size=22
+</code></pre>
+<h2 id="writing-to-the-disk"><a class="anchor" href="16-file-system.html#writing-to-the-disk">Writing to the disk</a></h2>
+<p>Writing files can be implemented by writing the contents of the <code>files</code> variable back to the disk in tar file format:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">fs_flush</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c">// Copy all file contents into `disk` buffer.</span>
+    <span class="pl-c1">memset</span>(disk, <span class="pl-c1">0</span>, <span class="pl-k">sizeof</span>(disk));
+    <span class="pl-k">unsigned</span> off = <span class="pl-c1">0</span>;
+    <span class="pl-k">for</span> (<span class="pl-k">int</span> file_i = <span class="pl-c1">0</span>; file_i &#x3C; FILES_MAX; file_i++) {
+        <span class="pl-k">struct</span> file *file = &#x26;files[file_i];
+        <span class="pl-k">if</span> (!file-><span class="pl-smi">in_use</span>)
+            <span class="pl-k">continue</span>;
+
+        <span class="pl-k">struct</span> tar_header *header = (<span class="pl-k">struct</span> tar_header *) &#x26;disk[off];
+        <span class="pl-c1">memset</span>(header, <span class="pl-c1">0</span>, <span class="pl-k">sizeof</span>(*header));
+        <span class="pl-c1">strcpy</span>(header-><span class="pl-smi">name</span>, file-><span class="pl-smi">name</span>);
+        <span class="pl-c1">strcpy</span>(header-><span class="pl-smi">mode</span>, <span class="pl-s"><span class="pl-pds">"</span>000644<span class="pl-pds">"</span></span>);
+        <span class="pl-c1">strcpy</span>(header-><span class="pl-smi">magic</span>, <span class="pl-s"><span class="pl-pds">"</span>ustar<span class="pl-pds">"</span></span>);
+        <span class="pl-c1">strcpy</span>(header-><span class="pl-smi">version</span>, <span class="pl-s"><span class="pl-pds">"</span>00<span class="pl-pds">"</span></span>);
+        header-><span class="pl-smi">type</span> = <span class="pl-s"><span class="pl-pds">'</span>0<span class="pl-pds">'</span></span>;
+
+        <span class="pl-c">// Turn the file size into an octal string.</span>
+        <span class="pl-k">int</span> filesz = file-><span class="pl-smi">size</span>;
+        <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-k">sizeof</span>(header-><span class="pl-smi">size</span>); i > <span class="pl-c1">0</span>; i--) {
+            header-><span class="pl-smi">size</span>[i - <span class="pl-c1">1</span>] = (filesz % <span class="pl-c1">8</span>) + <span class="pl-s"><span class="pl-pds">'</span>0<span class="pl-pds">'</span></span>;
+            filesz /= <span class="pl-c1">8</span>;
+        }
+
+        <span class="pl-c">// Calculate the checksum.</span>
+        <span class="pl-k">int</span> checksum = <span class="pl-s"><span class="pl-pds">'</span> <span class="pl-pds">'</span></span> * <span class="pl-k">sizeof</span>(header-><span class="pl-smi">checksum</span>);
+        <span class="pl-k">for</span> (<span class="pl-k">unsigned</span> i = <span class="pl-c1">0</span>; i &#x3C; <span class="pl-k">sizeof</span>(<span class="pl-k">struct</span> tar_header); i++)
+            checksum += (<span class="pl-k">unsigned</span> <span class="pl-k">char</span>) disk[off + i];
+
+        <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">5</span>; i >= <span class="pl-c1">0</span>; i--) {
+            header-><span class="pl-smi">checksum</span>[i] = (checksum % <span class="pl-c1">8</span>) + <span class="pl-s"><span class="pl-pds">'</span>0<span class="pl-pds">'</span></span>;
+            checksum /= <span class="pl-c1">8</span>;
+        }
+
+        <span class="pl-c">// Copy file data.</span>
+        <span class="pl-c1">memcpy</span>(header-><span class="pl-smi">data</span>, file-><span class="pl-smi">data</span>, file-><span class="pl-smi">size</span>);
+        off += <span class="pl-c1">align_up</span>(<span class="pl-k">sizeof</span>(<span class="pl-k">struct</span> tar_header) + file-><span class="pl-smi">size</span>, SECTOR_SIZE);
+    }
+
+    <span class="pl-c">// Write `disk` buffer into the virtio-blk.</span>
+    <span class="pl-k">for</span> (<span class="pl-k">unsigned</span> sector = <span class="pl-c1">0</span>; sector &#x3C; <span class="pl-k">sizeof</span>(disk) / SECTOR_SIZE; sector++)
+        <span class="pl-c1">read_write_disk</span>(&#x26;disk[sector * SECTOR_SIZE], sector, <span class="pl-c1">true</span>);
+
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>wrote <span class="pl-c1">%d</span> bytes to disk<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, <span class="pl-k">sizeof</span>(disk));
+}
+</code></pre>
+<p>In this function, a tar file is built in the <code>disk</code> variable, then written to the disk using the <code>read_write_disk</code> function. Isn't it simple?</p>
+<h2 id="design-file-readwrite-system-calls"><a class="anchor" href="16-file-system.html#design-file-readwrite-system-calls">Design file read/write system calls</a></h2>
+<p>Now that we have implemented file system read and write operations, let's make it possible for applications to read and write files. We'll provide two system calls: <code>readfile</code> for reading files and <code>writefile</code> for writing files. Both take as arguments the filename, a memory buffer for reading or writing, and the size of the buffer.</p>
+<pre><div class="code-block-title">common.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">SYS_READFILE</span>  <span class="pl-c1">4</span>
+#<span class="pl-k">define</span> <span class="pl-en">SYS_WRITEFILE</span> <span class="pl-c1">5</span>
+</code></pre>
+<pre><div class="code-block-title">user.c</div><code class="language-c"><span class="pl-k">int</span> <span class="pl-en">readfile</span>(<span class="pl-k">const</span> <span class="pl-k">char</span> *filename, <span class="pl-k">char</span> *buf, <span class="pl-k">int</span> len) {
+    <span class="pl-k">return</span> <span class="pl-bu">syscall</span>(SYS_READFILE, (<span class="pl-k">int</span>) filename, (<span class="pl-k">int</span>) buf, len);
+}
+
+<span class="pl-k">int</span> <span class="pl-en">writefile</span>(<span class="pl-k">const</span> <span class="pl-k">char</span> *filename, <span class="pl-k">const</span> <span class="pl-k">char</span> *buf, <span class="pl-k">int</span> len) {
+    <span class="pl-k">return</span> <span class="pl-bu">syscall</span>(SYS_WRITEFILE, (<span class="pl-k">int</span>) filename, (<span class="pl-k">int</span>) buf, len);
+}
+</code></pre>
+<pre><div class="code-block-title">user.h</div><code class="language-c"><span class="pl-k">int</span> <span class="pl-en">readfile</span>(<span class="pl-k">const</span> <span class="pl-k">char</span> *filename, <span class="pl-k">char</span> *buf, <span class="pl-k">int</span> len);
+<span class="pl-k">int</span> <span class="pl-en">writefile</span>(<span class="pl-k">const</span> <span class="pl-k">char</span> *filename, <span class="pl-k">const</span> <span class="pl-k">char</span> *buf, <span class="pl-k">int</span> len);
+</code></pre>
+<blockquote class="callout callout-tip">
+<p>It would be interesting to read the design of system calls in general operating systems and compare what has been omitted here. For example, why do <code>read(2)</code> and <code>write(2)</code> system calls in Linux take file descriptors as arguments, not filenames?</p>
+</blockquote>
+<h2 id="implement-system-calls"><a class="anchor" href="16-file-system.html#implement-system-calls">Implement system calls</a></h2>
+<p>Let's implement the system calls we defined in the previous section.</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">struct</span> file *<span class="pl-en">fs_lookup</span>(<span class="pl-k">const</span> <span class="pl-k">char</span> *filename) {
+    <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">0</span>; i &#x3C; FILES_MAX; i++) {
+        <span class="pl-k">struct</span> file *file = &#x26;files[i];
+        <span class="pl-k">if</span> (!<span class="pl-c1">strcmp</span>(file-><span class="pl-smi">name</span>, filename))
+            <span class="pl-k">return</span> file;
+    }
+
+    <span class="pl-k">return</span> <span class="pl-c1">NULL</span>;
+}
+
+<span class="pl-k">void</span> <span class="pl-en">handle_syscall</span>(<span class="pl-k">struct</span> trap_frame *f) {
+    <span class="pl-k">switch</span> (f-><span class="pl-smi">a3</span>) {
+        <span class="pl-c">/* omitted */</span>
+        <span class="pl-k">case</span> SYS_READFILE:
+        <span class="pl-k">case</span> SYS_WRITEFILE: {
+            <span class="pl-k">const</span> <span class="pl-k">char</span> *filename = (<span class="pl-k">const</span> <span class="pl-k">char</span> *) f-><span class="pl-smi">a0</span>;
+            <span class="pl-k">char</span> *buf = (<span class="pl-k">char</span> *) f-><span class="pl-smi">a1</span>;
+            <span class="pl-k">int</span> len = f-><span class="pl-smi">a2</span>;
+            <span class="pl-k">struct</span> file *file = <span class="pl-c1">fs_lookup</span>(filename);
+            <span class="pl-k">if</span> (!file) {
+                <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>file not found: <span class="pl-c1">%s</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, filename);
+                f-><span class="pl-smi">a0</span> = -<span class="pl-c1">1</span>;
+                <span class="pl-k">break</span>;
+            }
+
+            <span class="pl-k">if</span> (len > (<span class="pl-k">int</span>) <span class="pl-k">sizeof</span>(file-><span class="pl-smi">data</span>))
+                len = file-><span class="pl-smi">size</span>;
+
+            <span class="pl-k">if</span> (f-><span class="pl-smi">a3</span> == SYS_WRITEFILE) {
+                <span class="pl-c1">memcpy</span>(file-><span class="pl-smi">data</span>, buf, len);
+                file-><span class="pl-smi">size</span> = len;
+                <span class="pl-c1">fs_flush</span>();
+            } <span class="pl-k">else</span> {
+                <span class="pl-c1">memcpy</span>(buf, file-><span class="pl-smi">data</span>, len);
+            }
+
+            f-><span class="pl-smi">a0</span> = len;
+            <span class="pl-k">break</span>;
+        }
+        <span class="pl-k">default</span>:
+            <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>unexpected syscall a3=<span class="pl-c1">%x</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, f-><span class="pl-smi">a3</span>);
+    }
+}
+</code></pre>
+<p>File read and write operations are mostly the same, so they are grouped together in the same place. The <code>fs_lookup</code> function searches for an entry in the <code>files</code> variable based on the filename. For reading, it reads data from the file entry, and for writing, it modifies the contents of the file entry. Lastly, the <code>fs_flush</code> function writes to the disk.</p>
+<blockquote class="callout callout-warning">
+<p>For simplicity, we are directly referencing pointers passed from applications (aka. <em>user pointers</em>), but this poses security issues. If users can specify arbitrary memory areas, they could read and write kernel memory areas through system calls.</p>
+</blockquote>
+<h2 id="file-readwrite-commands"><a class="anchor" href="16-file-system.html#file-readwrite-commands">File read/write commands</a></h2>
+<p>Let's read and write files from the shell. Since the shell doesn't implement command-line argument parsing, we'll implement <code>readfile</code> and <code>writefile</code> commands that read and write a hardcoded <code>hello.txt</code> file for now:</p>
+<pre><div class="code-block-title">shell.c</div><code class="language-c">        <span class="pl-k">else</span> <span class="pl-k">if</span> (strcmp(cmdline, <span class="pl-s"><span class="pl-pds">"</span>readfile<span class="pl-pds">"</span></span>) == <span class="pl-c1">0</span>) {
+            <span class="pl-k">char</span> buf[<span class="pl-c1">128</span>];
+            <span class="pl-k">int</span> len = <span class="pl-c1">readfile</span>(<span class="pl-s"><span class="pl-pds">"</span>hello.txt<span class="pl-pds">"</span></span>, buf, <span class="pl-k">sizeof</span>(buf));
+            buf[len] = <span class="pl-s"><span class="pl-pds">'</span><span class="pl-cce">\0</span><span class="pl-pds">'</span></span>;
+            <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span><span class="pl-c1">%s</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, buf);
+        }
+        <span class="pl-k">else</span> <span class="pl-k">if</span> (strcmp(cmdline, <span class="pl-s"><span class="pl-pds">"</span>writefile<span class="pl-pds">"</span></span>) == <span class="pl-c1">0</span>)
+            <span class="pl-en">writefile</span>(<span class="pl-s"><span class="pl-pds">"</span>hello.txt<span class="pl-pds">"</span></span>, <span class="pl-s"><span class="pl-pds">"</span>Hello from shell!<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, <span class="pl-c1">19</span>);
+</code></pre>
+<p>It's easy peasy! However, it causes a page fault:</p>
+<pre><code class="language-plain">$ ./run.sh
+
+> readfile
+PANIC: kernel.c:561: unexpected trap scause=0000000d, stval=01000423, sepc=8020128a
+</code></pre>
+<p>Let's dig into the cause. According the <code>llvm-objdump</code>, it happens in <code>strcmp</code> function:</p>
+<pre><code class="language-plain">$ llvm-objdump -d kernel.elf
+...
+
+80201282 &#x3C;strcmp>:
+80201282: 03 46 05 00   lbu     a2, 0(a0)
+80201286: 15 c2         beqz    a2, 0x802012aa &#x3C;.LBB3_4>
+80201288: 05 05         addi    a0, a0, 1
+
+8020128a &#x3C;.LBB3_2>:
+8020128a: 83 c6 05 00   lbu     a3, 0(a1) ← page fault here (a1 has 2nd argument)
+8020128e: 33 37 d0 00   snez    a4, a3
+80201292: 93 77 f6 0f   andi    a5, a2, 255
+80201296: bd 8e         xor     a3, a3, a5
+80201298: 93 b6 16 00   seqz    a3, a3
+</code></pre>
+<p>Upon checking the page table contents in QEMU monitor, the page at <code>0x1000423</code> (with <code>vaddr = 01000000</code>) is indeed mapped as a user page (<code>u</code>) with read, write, and execute (<code>rwx</code>) permissions:</p>
+<pre><code class="language-plain">QEMU 8.0.2 monitor - type 'help' for more information
+(qemu) info mem
+vaddr    paddr            size     attr
+-------- ---------------- -------- -------
+01000000 000000008026c000 00001000 rwxu-a-
+</code></pre>
+<p>Let's dump the memory at the virtual address (<code>x</code> command):</p>
+<pre><code class="language-plain">(qemu) x /10c 0x1000423
+01000423: 'h' 'e' 'l' 'l' 'o' '.' 't' 'x' 't' '\x00' 'r' 'e' 'a' 'd' 'f' 'i'
+01000433: 'l' 'e' '\x00' 'h' 'e' 'l' 'l' 'o' '\x00' '%' 's' '\n' '\x00' 'e' 'x' 'i'
+01000443: 't' '\x00' 'w' 'r' 'i' 't' 'e' 'f'
+</code></pre>
+<p>If the page table settings are incorrect, the <code>x</code> command will display an error or contents in other pages. Here, we can see that the page table is correctly configured, and the pointer is indeed pointing to the string <code>"hello.txt"</code>.</p>
+<p>In that case, what could be the cause of the page fault? The answer is:  <code>SUM</code> bit in <code>sstatus</code> CSR is not set.</p>
+<h2 id="accessing-user-pointers"><a class="anchor" href="16-file-system.html#accessing-user-pointers">Accessing user pointers</a></h2>
+<p>In RISC-V, the behavior of S-Mode (kernel) can be configured through  <code>sstatus</code> CSR, including <strong>SUM (permit Supervisor User Memory access) bit</strong>. When SUM is not set, S-Mode programs (i.e. kernel) cannot access U-Mode (user) pages.</p>
+<blockquote class="callout callout-tip">
+<p>This is a safety measure to prevent unintended references to user memory areas.
+Incidentally, Intel CPUs also have the same feature named "SMAP (Supervisor Mode Access Prevention).</p>
+</blockquote>
+<p>Define the position of the <code>SUM</code> bit as follows:</p>
+<pre><div class="code-block-title">kernel.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">SSTATUS_SUM</span>  (<span class="pl-c1">1</span> &#x3C;&#x3C; <span class="pl-c1">18</span>)
+</code></pre>
+<p>All we need to do is to set the <code>SUM</code> bit when entering user space:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-en">__attribute__</span>((naked)) void user_entry(<span class="pl-k">void</span>) {
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(
+        <span class="pl-s"><span class="pl-pds">"</span>csrw sepc, %[sepc]<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>csrw sstatus, %[sstatus]<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sret<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        :
+        : [sepc] <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span> (USER_BASE),
+          [sstatus] <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span> (SSTATUS_SPIE | SSTATUS_SUM) <span class="pl-c">// updated</span>
+    );
+}
+</code></pre>
+<blockquote class="callout callout-tip">
+<p>I explained that <em>"the SUM bit was the cause"</em>, but you may wonder how you could find this on your own. It is indeed tough - even if you are aware that a page fault is occurring, it's often hard to narrow down. Unfortunately, CPUs don't even provide detailed error codes. The reason I noticed was, simply because I knew about the SUM bit.</p>
+<p>Here are some debugging methods for when things don't work <em>"properly"</em>:</p>
+<ul>
+<li>Read the RISC-V specification carefully. It does mention that <em>"when the SUM bit is set, S-Mode can access U-Mode pages."</em></li>
+<li>Read QEMU's source code. The aforementioned page fault cause is <a href="https://github.com/qemu/qemu/blob/d1181d29370a4318a9f11ea92065bea6bb159f83/target/riscv/cpu_helper.c#L1008">implemented here</a>. However, this can be as challenging or more so than reading the specification thoroughly.</li>
+<li>Ask LLMs. Not joking. It's becoming your best pair programmer.</li>
+</ul>
+<p>This is one of the major reasons why building an OS from scratch is a time sink and prone to giving up. However, more you overcome these challenges, the more you'll learn and ... be super happy!</p>
+</blockquote>
+<h2 id="testing-file-readswrites"><a class="anchor" href="16-file-system.html#testing-file-readswrites">Testing file reads/writes</a></h2>
+<p>Let's try reading and writing files again. <code>readfile</code> should display the contents of <code>hello.txt</code>:</p>
+<pre><code>$ ./run.sh
+
+> readfile
+Can you see me? Ah, there you are! You've unlocked the achievement "Virtio Newbie!"
+</code></pre>
+<p>Let's also try writing to the file. Once it's done the number of bytes written should be displayed:</p>
+<pre><code>> writefile
+wrote 2560 bytes to disk
+</code></pre>
+<p>Now the disk image has been updated with the new contents. Exit QEMU and extract <code>disk.tar</code>. You should see the updated contents:</p>
+<pre><code>$ mkdir tmp
+$ cd tmp
+$ tar xf ../disk.tar
+$ ls -alh
+total 4.0K
+drwxr-xr-x  4 seiya staff 128 Jul 22 22:50 .
+drwxr-xr-x 25 seiya staff 800 Jul 22 22:49 ..
+-rw-r--r--  1 seiya staff  26 Jan  1  1970 hello.txt
+-rw-r--r--  1 seiya staff   0 Jan  1  1970 meow.txt
+$ cat hello.txt
+Hello from shell!
+</code></pre>
+<p>You've implemented a key feature <em>"file system"</em>! Yay!</p></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="17-outro.html">Outro ⏩</a><a href="15-virtio-blk.html" class="sm:-order-1">⏪ Disk I/O</a></div></footer></body></html>

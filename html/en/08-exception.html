@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html><head><title>Exception - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - Exception</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="font-bold">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><p>Exception is a CPU feature that allows the kernel to handle various events, such as invalid memory access (aka. page faults), illegal instructions, and system calls.</p>
+<p>Exception is like a hardware-assisted <code>try-catch</code> mechanism in C++ or Java. Until CPU encounters the situation where kernel intervention is required, it continues to execute the program. The key difference from <code>try-catch</code> is that the kernel can resume the execution from the point where the exception occurred, as if nothing happened. Doesn't it sound like cool CPU feature?</p>
+<p>Exception can also be triggered in kernel mode and mostly they are fatal kernel bugs. If QEMU resets unexpectedly or the kernel does not work as expected, it's likely that an exception occurred. I recommend to implement an exception handler early to crash gracefully with a kernel panic. It's similar to adding an unhandled rejection handler as the first step in JavaScript development.</p>
+<h2 id="life-of-an-exception"><a class="anchor" href="08-exception.html#life-of-an-exception">Life of an exception</a></h2>
+<p>In RISC-V, an exception will be handled as follows:</p>
+<ol>
+<li>CPU checks the <code>medeleg</code> register to determine which operation mode should handle the exception. In our case, OpenSBI has already configured to handle U-Mode/S-mode exceptions in S-Mode's handler.</li>
+<li>CPU saves its state (registers) into various CSRs (see below).</li>
+<li>The value of the <code>stvec</code> register is set to the program counter, jumping to the kernel's exception handler.</li>
+<li>The exception handler saves general-purpose registers (i.e. the program state), and handles the exception.</li>
+<li>Once it's done, the exception handler restores the saved execution state and calls the <code>sret</code> instruction to resume execution from the point where the exception occurred.</li>
+</ol>
+<p>The CSRs updated in step 2 are mainly as follows. The kernel's exception determines necessary actions based on the CSRs:</p>
+<table>
+<thead>
+<tr>
+<th>Register Name</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>scause</code></td>
+<td>Type of exception. The kernel reads this to identify the type of exception.</td>
+</tr>
+<tr>
+<td><code>stval</code></td>
+<td>Additional information about the exception (e.g., memory address that caused the exception). Depends on the type of exception.</td>
+</tr>
+<tr>
+<td><code>sepc</code></td>
+<td>Program counter at the point where the exception occurred.</td>
+</tr>
+<tr>
+<td><code>sstatus</code></td>
+<td>Operation mode (U-Mode/S-Mode) when the exception has occurred.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="exception-handler"><a class="anchor" href="08-exception.html#exception-handler">Exception Handler</a></h2>
+<p>Now let's write your first exception handler! Here's the entry point of the exception handler to be registered in the <code>stvec</code> register:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-en">__attribute__</span>((naked))
+__attribute__((aligned(<span class="pl-c1">4</span>)))
+void kernel_entry(<span class="pl-k">void</span>) {
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(
+        <span class="pl-s"><span class="pl-pds">"</span>csrw sscratch, sp<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>addi sp, sp, -4 * 31<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw ra,  4 * 0(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw gp,  4 * 1(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw tp,  4 * 2(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t0,  4 * 3(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t1,  4 * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t2,  4 * 5(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t3,  4 * 6(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t4,  4 * 7(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t5,  4 * 8(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw t6,  4 * 9(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a0,  4 * 10(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a1,  4 * 11(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a2,  4 * 12(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a3,  4 * 13(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a4,  4 * 14(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a5,  4 * 15(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a6,  4 * 16(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a7,  4 * 17(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s0,  4 * 18(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s1,  4 * 19(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s2,  4 * 20(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s3,  4 * 21(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s4,  4 * 22(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s5,  4 * 23(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s6,  4 * 24(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s7,  4 * 25(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s8,  4 * 26(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s9,  4 * 27(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s10, 4 * 28(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw s11, 4 * 29(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+
+        <span class="pl-s"><span class="pl-pds">"</span>csrr a0, sscratch<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sw a0, 4 * 30(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+
+        <span class="pl-s"><span class="pl-pds">"</span>mv a0, sp<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>call handle_trap<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+
+        <span class="pl-s"><span class="pl-pds">"</span>lw ra,  4 * 0(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw gp,  4 * 1(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw tp,  4 * 2(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw t0,  4 * 3(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw t1,  4 * 4(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw t2,  4 * 5(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw t3,  4 * 6(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw t4,  4 * 7(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw t5,  4 * 8(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw t6,  4 * 9(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw a0,  4 * 10(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw a1,  4 * 11(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw a2,  4 * 12(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw a3,  4 * 13(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw a4,  4 * 14(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw a5,  4 * 15(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw a6,  4 * 16(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw a7,  4 * 17(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s0,  4 * 18(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s1,  4 * 19(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s2,  4 * 20(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s3,  4 * 21(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s4,  4 * 22(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s5,  4 * 23(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s6,  4 * 24(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s7,  4 * 25(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s8,  4 * 26(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s9,  4 * 27(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s10, 4 * 28(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw s11, 4 * 29(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>lw sp,  4 * 30(sp)<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sret<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+    );
+}
+</code></pre>
+<p>Here are some key points:</p>
+<ul>
+<li><code>sscratch</code> register is used as a temporary storage to save the stack pointer at the time of exception occurrence, which is later restored.</li>
+<li>Floating-point registers are not used within the kernel, and thus there's no need to save them here. Generally, they are saved and restored during thread switching.</li>
+<li>The stack pointer is set in the <code>a0</code> register, and the <code>handle_trap</code> function is called. At this point, the address pointed to by the stack pointer contains register values stored in the same structure as the <code>trap_frame</code> structure described later.</li>
+<li>Adding <code>__attribute__((aligned(4)))</code> aligns the function's starting address to a 4-byte boundary. This is because the <code>stvec</code> register not only holds the address of the exception handler but also has flags representing the mode in its lower 2 bits.</li>
+</ul>
+<blockquote class="callout callout-note">
+<p>The entry point of exception handlers is one of most critical and error-prone parts of the kernel. Reading the code closely, you'll notice that <em>original</em> values of general-purpose registers are saved onto the stack, even <code>sp</code> by using <code>sscratch</code>.</p>
+<p>If you accidentally overwrite <code>a0</code> register, it can lead to hard-to-debug problems like "local variable values change for no apparent reason". Save the program state perfectly not to spend your precious Saturday night debugging!</p>
+</blockquote>
+<p>In the entry point, the following <code>handle_trap</code> function is called to handle the exception in our favorite C language:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">handle_trap</span>(<span class="pl-k">struct</span> trap_frame *f) {
+    <span class="pl-c1">uint32_t</span> scause = <span class="pl-c1">READ_CSR</span>(scause);
+    <span class="pl-c1">uint32_t</span> stval = <span class="pl-c1">READ_CSR</span>(stval);
+    <span class="pl-c1">uint32_t</span> user_pc = <span class="pl-c1">READ_CSR</span>(sepc);
+
+    <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>unexpected trap scause=<span class="pl-c1">%x</span>, stval=<span class="pl-c1">%x</span>, sepc=<span class="pl-c1">%x</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, scause, stval, user_pc);
+}
+</code></pre>
+<p>It reads why the exception has occurred, and triggers a kernel panic for debugging purposes.</p>
+<p>Let's define the various macros used here in `kernel.h:</p>
+<pre><div class="code-block-title">kernel.h</div><code class="language-c">#<span class="pl-k">include</span> <span class="pl-s"><span class="pl-pds">"</span>common.h<span class="pl-pds">"</span></span>
+
+<span class="pl-k">struct</span> trap_frame {
+    <span class="pl-c1">uint32_t</span> ra;
+    <span class="pl-c1">uint32_t</span> gp;
+    <span class="pl-c1">uint32_t</span> tp;
+    <span class="pl-c1">uint32_t</span> t0;
+    <span class="pl-c1">uint32_t</span> t1;
+    <span class="pl-c1">uint32_t</span> t2;
+    <span class="pl-c1">uint32_t</span> t3;
+    <span class="pl-c1">uint32_t</span> t4;
+    <span class="pl-c1">uint32_t</span> t5;
+    <span class="pl-c1">uint32_t</span> t6;
+    <span class="pl-c1">uint32_t</span> a0;
+    <span class="pl-c1">uint32_t</span> a1;
+    <span class="pl-c1">uint32_t</span> a2;
+    <span class="pl-c1">uint32_t</span> a3;
+    <span class="pl-c1">uint32_t</span> a4;
+    <span class="pl-c1">uint32_t</span> a5;
+    <span class="pl-c1">uint32_t</span> a6;
+    <span class="pl-c1">uint32_t</span> a7;
+    <span class="pl-c1">uint32_t</span> s0;
+    <span class="pl-c1">uint32_t</span> s1;
+    <span class="pl-c1">uint32_t</span> s2;
+    <span class="pl-c1">uint32_t</span> s3;
+    <span class="pl-c1">uint32_t</span> s4;
+    <span class="pl-c1">uint32_t</span> s5;
+    <span class="pl-c1">uint32_t</span> s6;
+    <span class="pl-c1">uint32_t</span> s7;
+    <span class="pl-c1">uint32_t</span> s8;
+    <span class="pl-c1">uint32_t</span> s9;
+    <span class="pl-c1">uint32_t</span> s10;
+    <span class="pl-c1">uint32_t</span> s11;
+    <span class="pl-c1">uint32_t</span> sp;
+} __attribute__((packed));
+
+#<span class="pl-k">define</span> <span class="pl-en">READ_CSR</span>(<span class="pl-v">reg</span>)                                                          \
+    ({                                                                         \
+        <span class="pl-k">unsigned</span> <span class="pl-k">long</span> __tmp;                                                   \
+        <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>csrr %0, <span class="pl-pds">"</span></span> #reg : <span class="pl-s"><span class="pl-pds">"</span>=r<span class="pl-pds">"</span></span>(__tmp));                  \
+        __tmp;                                                                 \
+    })
+
+#<span class="pl-k">define</span> <span class="pl-en">WRITE_CSR</span>(<span class="pl-v">reg, value</span>)                                                  \
+    <span class="pl-k">do</span> {                                                                       \
+        <span class="pl-c1">uint32_t</span> __tmp = (value);                                              \
+        <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>csrw <span class="pl-pds">"</span></span> #reg <span class="pl-s"><span class="pl-pds">"</span>, %0<span class="pl-pds">"</span></span> ::<span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(__tmp));                \
+    } <span class="pl-k">while</span> (<span class="pl-c1">0</span>)
+</code></pre>
+<p>The <code>trap_frame</code> struct represents the program state saved in <code>kernel_entry</code>. <code>READ_CSR</code> and <code>WRITE_CSR</code> macros are convenient macros for reading and writing CSR registers.</p>
+<p>The last thing we need to do is to tell the CPU where the exception handler is located. It's done by setting the <code>stvec</code> register in the <code>kernel_main</code> function:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">kernel_main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">memset</span>(__bss, <span class="pl-c1">0</span>, (<span class="pl-c1">size_t</span>) __bss_end - (<span class="pl-c1">size_t</span>) __bss);
+
+    <span class="pl-c1">WRITE_CSR</span>(stvec, (<span class="pl-c1">uint32_t</span>) kernel_entry); <span class="pl-c">// new</span>
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>unimp<span class="pl-pds">"</span></span>); <span class="pl-c">// new</span>
+</code></pre>
+<p>In addition to setting the <code>stvec</code> register, it executes <code>unimp</code> instruction. it's a pseudo instruction which triggers an illegal instruction exception.</p>
+<blockquote class="callout callout-note">
+<p><strong><code>unimp</code> is a "pseudo" instruction</strong>.</p>
+<p>According to <a href="https://github.com/riscv-non-isa/riscv-asm-manual/blob/main/src/asm-manual.adoc#instruction-aliases">RISC-V Assembly Programmer's Manual</a>, the assembler translates <code>unimp</code> to the following instruction:</p>
+<pre><code>csrrw x0, cycle, x0
+</code></pre>
+<p>This reads and writes the <code>cycle</code> register into <code>x0</code>. Since <code>cycle</code> is a read-only register, CPU determines that the instruction is invalid and triggers an illegal instruction exception.</p>
+</blockquote>
+<h2 id="lets-try-it"><a class="anchor" href="08-exception.html#lets-try-it">Let's try it</a></h2>
+<p>Let's try running it and confirm that the exception handler is called:</p>
+<pre><code class="language-plain">$ ./run.sh
+Hello World!
+PANIC: kernel.c:47: unexpected trap scause=00000002, stval=ffffff84, sepc=8020015e
+</code></pre>
+<p>According to the specification, when the value of <code>scause</code> is 2, it indicates an "Illegal instruction," meaning that program tried to execute an invalid instruction. This is precisely the expected behavior of the <code>unimp</code> instruction!</p>
+<p>Let's also check where the value of <code>sepc</code> is pointing. If it's pointing to the line where the <code>unimp</code> instruction is called,  everything is working correctly:</p>
+<pre><code class="language-plain">$ llvm-addr2line -e kernel.elf 8020015e
+/Users/seiya/os-from-scratch/kernel.c:129
+</code></pre></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="09-memory-allocation.html">Memory Allocation ⏩</a><a href="07-kernel-panic.html" class="sm:-order-1">⏪ Kernel Panic</a></div></footer></body></html>

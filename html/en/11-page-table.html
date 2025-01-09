@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html><head><title>Page Table - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - Page Table</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="font-bold">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><h2 id="memory-management-and-virtual-addressing"><a class="anchor" href="11-page-table.html#memory-management-and-virtual-addressing">Memory management and virtual addressing</a></h2>
+<p>When a program accesses memory, CPU translates the specified address (<em>virtual</em> address) into a physical address. The table that maps virtual addresses to physical addresses is called a <em>page table</em>. By switching page tables, the same virtual address can point to different physical addresses. This allows isolation of memory spaces (virtual address spaces) and separation of kernel and application memory areas, enhancing system security.</p>
+<p>In this chapter, we'll implement the hardware-based memory isolation mechanism.</p>
+<h2 id="structure-of-virtual-address"><a class="anchor" href="11-page-table.html#structure-of-virtual-address">Structure of virtual address</a></h2>
+<p>In this book, we use one of RISC-V's paging mechanisms called Sv32, which uses a two-level page table. The 32-bit virtual address is divided into a first-level page table index (<code>VPN[1]</code>), a second-level index (<code>VPN[0]</code>), and a page offset.</p>
+<p>Try <strong><a href="https://riscv-sv32.v0.build/">RISC-V Sv-32 Virtual Address Breakdown</a></strong> to see how virtual addresses are broken down into page table indices and offsets.</p>
+<p>Here are some examples:</p>
+<table>
+<thead>
+<tr>
+<th>Virtual Address</th>
+<th><code>VPN[1]</code> (10 bits)</th>
+<th><code>VPN[0]</code> (10 bits)</th>
+<th>Offset (12 bits)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0x1000_0000</td>
+<td>0x040</td>
+<td>0x000</td>
+<td>0x000</td>
+</tr>
+<tr>
+<td>0x1000_0000</td>
+<td>0x040</td>
+<td>0x000</td>
+<td>0x000</td>
+</tr>
+<tr>
+<td>0x1000_1000</td>
+<td>0x040</td>
+<td>0x001</td>
+<td>0x000</td>
+</tr>
+<tr>
+<td>0x1000_f000</td>
+<td>0x040</td>
+<td>0x00f</td>
+<td>0x000</td>
+</tr>
+<tr>
+<td>0x2000_f0ab</td>
+<td>0x080</td>
+<td>0x00f</td>
+<td>0x0ab</td>
+</tr>
+<tr>
+<td>0x2000_f012</td>
+<td>0x080</td>
+<td>0x00f</td>
+<td>0x012</td>
+</tr>
+<tr>
+<td>0x2000_f034</td>
+<td>0x080</td>
+<td>0x00f</td>
+<td>0x045</td>
+</tr>
+</tbody>
+</table>
+<blockquote class="callout callout-tip">
+<p>From the examples above, we can see the following characteristics of the indices:</p>
+<ul>
+<li>Changing the middle bits (<code>VPN[0]</code>) doesn't affect the first-level index. This means page table entries for nearby addresses are concentrated in the same first-level page table.</li>
+<li>Changing the lower bits doesn't affect either <code>VPN[1]</code> or <code>VPN[0]</code>. This means addresses within the same 4KB page are in the same page table entry.</li>
+</ul>
+<p>This structure utilizes <a href="https://en.wikipedia.org/wiki/Locality_of_reference">the principle of locality</a>, allowing for smaller page table sizes and more effective use of the Translation Lookaside Buffer (TLB).</p>
+</blockquote>
+<p>When accessing memory, CPU calculates <code>VPN[1]</code> and <code>VPN[0]</code> to identify the corresponding page table entry, reads the mapped base phiysical address, and adds <code>offset</code> to get the final physical address.</p>
+<h2 id="constructing-the-page-table"><a class="anchor" href="11-page-table.html#constructing-the-page-table">Constructing the page table</a></h2>
+<p>Let's construct a page table in Sv32. First, we'll define some macros. <code>SATP_SV32</code> is a single bit in the <code>satp</code> register which indicates "enable paging in Sv32 mode", and <code>PAGE_*</code> are flags to be set in page table entries.</p>
+<pre><div class="code-block-title">kernel.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">SATP_SV32</span> (<span class="pl-c1">1u</span> &#x3C;&#x3C; <span class="pl-c1">31</span>)
+#<span class="pl-k">define</span> <span class="pl-en">PAGE_V</span>    (<span class="pl-c1">1</span> &#x3C;&#x3C; <span class="pl-c1">0</span>)   <span class="pl-c">// "Valid" bit (entry is enabled)</span>
+#<span class="pl-k">define</span> <span class="pl-en">PAGE_R</span>    (<span class="pl-c1">1</span> &#x3C;&#x3C; <span class="pl-c1">1</span>)   <span class="pl-c">// Readable</span>
+#<span class="pl-k">define</span> <span class="pl-en">PAGE_W</span>    (<span class="pl-c1">1</span> &#x3C;&#x3C; <span class="pl-c1">2</span>)   <span class="pl-c">// Writable</span>
+#<span class="pl-k">define</span> <span class="pl-en">PAGE_X</span>    (<span class="pl-c1">1</span> &#x3C;&#x3C; <span class="pl-c1">3</span>)   <span class="pl-c">// Executable</span>
+#<span class="pl-k">define</span> <span class="pl-en">PAGE_U</span>    (<span class="pl-c1">1</span> &#x3C;&#x3C; <span class="pl-c1">4</span>)   <span class="pl-c">// User (accessible in user mode)</span>
+</code></pre>
+<h2 id="mapping-pages"><a class="anchor" href="11-page-table.html#mapping-pages">Mapping pages</a></h2>
+<p>The following <code>map_page</code> function takes the first-level page table (<code>table1</code>), the virtual address (<code>vaddr</code>), the physical address (<code>paddr</code>), and page table entry flags (<code>flags</code>):</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">map_page</span>(<span class="pl-c1">uint32_t</span> *table1, <span class="pl-c1">uint32_t</span> vaddr, <span class="pl-c1">paddr_t</span> paddr, <span class="pl-c1">uint32_t</span> flags) {
+    <span class="pl-k">if</span> (!<span class="pl-c1">is_aligned</span>(vaddr, PAGE_SIZE))
+        <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>unaligned vaddr <span class="pl-c1">%x</span><span class="pl-pds">"</span></span>, vaddr);
+
+    <span class="pl-k">if</span> (!<span class="pl-c1">is_aligned</span>(paddr, PAGE_SIZE))
+        <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>unaligned paddr <span class="pl-c1">%x</span><span class="pl-pds">"</span></span>, paddr);
+
+    <span class="pl-c1">uint32_t</span> vpn1 = (vaddr >> <span class="pl-c1">22</span>) &#x26; <span class="pl-c1">0x3ff</span>;
+    <span class="pl-k">if</span> ((table1[vpn1] &#x26; PAGE_V) == <span class="pl-c1">0</span>) {
+        <span class="pl-c">// Create the non-existent 2nd level page table.</span>
+        <span class="pl-c1">uint32_t</span> pt_paddr = <span class="pl-c1">alloc_pages</span>(<span class="pl-c1">1</span>);
+        table1[vpn1] = ((pt_paddr / PAGE_SIZE) &#x3C;&#x3C; <span class="pl-c1">10</span>) | PAGE_V;
+    }
+
+    <span class="pl-c">// Set the 2nd level page table entry to map the physical page.</span>
+    <span class="pl-c1">uint32_t</span> vpn0 = (vaddr >> <span class="pl-c1">12</span>) &#x26; <span class="pl-c1">0x3ff</span>;
+    <span class="pl-c1">uint32_t</span> *table0 = (<span class="pl-c1">uint32_t</span> *) ((table1[vpn1] >> <span class="pl-c1">10</span>) * PAGE_SIZE);
+    table0[vpn0] = ((paddr / PAGE_SIZE) &#x3C;&#x3C; <span class="pl-c1">10</span>) | flags | PAGE_V;
+}
+</code></pre>
+<p>This function prepares the second-level page table, and fills the page table entry in the second level.</p>
+<p>It divides <code>paddr</code> by <code>PAGE_SIZE</code> because the entry should contain the physical page number, not the physical address itself. Don't confuse the two!</p>
+<h2 id="mapping-kernel-memory-area"><a class="anchor" href="11-page-table.html#mapping-kernel-memory-area">Mapping kernel memory area</a></h2>
+<p>The page table must be configured not only for applications (user space), but also for the kernel.</p>
+<p>In this book, the kernel memory mapping is configured so that the kernel's virtual addresses match the physical addresses (i.e. <code>vaddr == paddr</code>). This allows the same code to continue running even after enabling paging.</p>
+<p>First, let's modify the kernel's linker script to define the starting address used by the kernel (<code>__kernel_base</code>):</p>
+<pre><div class="code-block-title">kernel.ld</div><code class="language-plain">ENTRY(boot)
+
+SECTIONS {
+    . = 0x80200000;
+    __kernel_base = .;
+</code></pre>
+<blockquote class="callout callout-warning">
+<p>Define <code>__kernel_base</code> <strong>after</strong> the line <code>. = 0x80200000</code>. If the order is reversed, the value of <code>__kernel_base</code> will be zero.</p>
+</blockquote>
+<p>Next, add the page table to the process struct. This will be a pointer to the first-level page table.</p>
+<pre><div class="code-block-title">kernel.h</div><code class="language-c"><span class="pl-k">struct</span> process {
+    <span class="pl-k">int</span> pid;
+    <span class="pl-k">int</span> state;
+    <span class="pl-c1">vaddr_t</span> sp;
+    <span class="pl-c1">uint32_t</span> *page_table; <span class="pl-c">/* new */</span>
+    <span class="pl-c1">uint8_t</span> stack[<span class="pl-c1">8192</span>];
+};
+</code></pre>
+<p>Lastly, map the kernel pages in the <code>create_process</code> function. The kernel pages span from <code>__kernel_base</code> to <code>__free_ram_end</code>. This approach ensures that the kernel can always access both statically allocated areas (like <code>.text</code>), and dynamically allocated areas managed by <code>alloc_pages</code>:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">extern</span> <span class="pl-k">char</span> __kernel_base[];
+
+<span class="pl-k">struct</span> process *<span class="pl-en">create_process</span>(<span class="pl-c1">uint32_t</span> pc) {
+    <span class="pl-c">/* omitted */</span>
+
+    <span class="pl-c">// Map kernel pages (new).</span>
+    <span class="pl-c1">uint32_t</span> *page_table = (<span class="pl-c1">uint32_t</span> *) <span class="pl-c1">alloc_pages</span>(<span class="pl-c1">1</span>);
+    <span class="pl-k">for</span> (<span class="pl-c1">paddr_t</span> paddr = (<span class="pl-c1">paddr_t</span>) __kernel_base;
+         paddr &#x3C; (<span class="pl-c1">paddr_t</span>) __free_ram_end; paddr += PAGE_SIZE)
+        <span class="pl-c1">map_page</span>(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+
+    proc-><span class="pl-smi">pid</span> = i + <span class="pl-c1">1</span>;
+    proc-><span class="pl-smi">state</span> = PROC_RUNNABLE;
+    proc-><span class="pl-smi">sp</span> = (<span class="pl-c1">uint32_t</span>) sp;
+    proc-><span class="pl-smi">page_table</span> = page_table; <span class="pl-c">/* new */</span>
+    <span class="pl-k">return</span> proc;
+}
+</code></pre>
+<h2 id="switching-page-tables"><a class="anchor" href="11-page-table.html#switching-page-tables">Switching page tables</a></h2>
+<p>Let's switch the process's page table when context switching:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">yield</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c">/* omitted */</span>
+
+    <span class="pl-c">// Switch page table (new).</span>
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(
+        <span class="pl-s"><span class="pl-pds">"</span>sfence.vma<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>csrw satp, %[satp]<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sfence.vma<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>csrw sscratch, %[sscratch]<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        :
+        <span class="pl-c">// Don't forget the trailing comma!</span>
+        : [satp] <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span> (SATP_SV32 | ((<span class="pl-c1">uint32_t</span>) next-><span class="pl-smi">page_table</span> / PAGE_SIZE)),
+          [sscratch] <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span> ((<span class="pl-c1">uint32_t</span>) &#x26;next-><span class="pl-smi">stack</span>[<span class="pl-k">sizeof</span>(next-><span class="pl-smi">stack</span>)])
+    );
+
+    <span class="pl-c1">switch_context</span>(&#x26;prev-><span class="pl-smi">sp</span>, &#x26;next-><span class="pl-smi">sp</span>);
+}
+</code></pre>
+<p>We can switch page tables by specifying the first-level page table in <code>satp</code>. Note that we divide by <code>PAGE_SIZE</code> because it's the physical page number.</p>
+<p><code>sfence.vma</code> instructions added before and after setting the page table serve two purposes:</p>
+<ol>
+<li>To ensure that changes to the page table are properly completed (similar to a memory fence).</li>
+<li>To clear the cache of page table entries (TLB).</li>
+</ol>
+<blockquote class="callout callout-tip">
+<p>When the kernel starts, paging is disabled by default (the <code>satp</code> register is not set). Virtual addresses behave as if they match physical addresses.</p>
+</blockquote>
+<h2 id="testing-paging"><a class="anchor" href="11-page-table.html#testing-paging">Testing paging</a></h2>
+<p>let's try it and see how it works!</p>
+<pre><code class="language-plain">$ ./run.sh
+
+starting process A
+Astarting process B
+BABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB
+</code></pre>
+<p>The output is exactly the same as in the previous chapter (context switching). There's no visible change even after enabling paging. To check if we've set up the page tables correctly, let's inspect it with QEMU monitor!</p>
+<h2 id="examining-page-table-contents"><a class="anchor" href="11-page-table.html#examining-page-table-contents">Examining page table contents</a></h2>
+<p>Let's look at how the virtual addresses around <code>0x80000000</code> are mapped. If set up correctly, they should be mapped so that <code>(virtual address) == (physical address)</code>.</p>
+<pre><code class="language-plain">QEMU 8.0.2 monitor - type 'help' for more information
+(qemu) stop
+(qemu) info registers
+ ...
+ satp     80080253
+ ...
+</code></pre>
+<p>You can see that <code>satp</code> is <code>0x80080253</code>. According to the specification (RISC-V Sv32 mode), interpreting this value gives us the first-level page table's starting physical address: <code>(0x80080253 &#x26; 0x3fffff) * 4096 = 0x80253000</code>.</p>
+<p>Next, let's inspect the contents of the first-level page table. We want to know the second-level page table corresponding to the virtual address <code>0x80000000</code>. QEMU provides commands to display memory contents (memory dump). <code>xp</code> command dumps memory at the specified physical address. Dump the 512th entry because <code>0x80000000 >> 22 = 512</code>. Since each entry is 4 bytes, we multiply by 4:</p>
+<pre><code class="language-plain">(qemu) xp /x 0x80253000+512*4
+0000000080253800: 0x20095001
+</code></pre>
+<p>The first column shows the physical address, and the subsequent columns show the memory values. We can see that some non-zero values are set. The <code>/x</code> option specifies hexadecimal display. Adding a number before <code>x</code> (e.g., <code>/1024x</code>) specifies the number of entries to display.</p>
+<blockquote class="callout callout-tip">
+<p>Using the <code>x</code> command instead of <code>xp</code> allows you to view the memory dump for a specified <strong>virtual</strong> address. This is useful when examining user space (application) memory, where virtual addresses do not match physical addresses, unlike in our kernel space.</p>
+</blockquote>
+<p>According to the specification, the second-level page table is located at <code>(0x20095000 >> 10) * 4096 = 0x80254000</code>. Let's dump the entire second-level table (1024 entries):</p>
+<pre><code>(qemu) xp /1024x 0x80254000
+0000000080254000: 0x00000000 0x00000000 0x00000000 0x00000000
+0000000080254010: 0x00000000 0x00000000 0x00000000 0x00000000
+0000000080254020: 0x00000000 0x00000000 0x00000000 0x00000000
+0000000080254030: 0x00000000 0x00000000 0x00000000 0x00000000
+...
+00000000802547f0: 0x00000000 0x00000000 0x00000000 0x00000000
+0000000080254800: 0x2008004f 0x2008040f 0x2008080f 0x20080c0f
+0000000080254810: 0x2008100f 0x2008140f 0x2008180f 0x20081c0f
+0000000080254820: 0x2008200f 0x2008240f 0x2008280f 0x20082c0f
+0000000080254830: 0x2008300f 0x2008340f 0x2008380f 0x20083c0f
+0000000080254840: 0x200840cf 0x2008440f 0x2008484f 0x20084c0f
+0000000080254850: 0x200850cf 0x2008540f 0x200858cf 0x20085c0f
+0000000080254860: 0x2008600f 0x2008640f 0x2008680f 0x20086c0f
+0000000080254870: 0x2008700f 0x2008740f 0x2008780f 0x20087c0f
+0000000080254880: 0x200880cf 0x2008840f 0x2008880f 0x20088c0f
+...
+</code></pre>
+<p>The initial entries are filled with zeros, but values start appearing from the 512th entry (<code>254800</code>). This is because <code>__kernel_base</code> is <code>0x80200000</code>, and <code>VPN[1]</code> is <code>0x200</code>.</p>
+<p>We've manually read memory dumps up, but QEMU actually provides a command that displays the current page table mappings in human-readable format. If you want to do a final check on whether the mapping is correct, you can use the <code>info mem</code> command:</p>
+<pre><code class="language-plain">(qemu) info mem
+vaddr    paddr            size     attr
+-------- ---------------- -------- -------
+80200000 0000000080200000 00001000 rwx--a-
+80201000 0000000080201000 0000f000 rwx----
+80210000 0000000080210000 00001000 rwx--ad
+80211000 0000000080211000 00001000 rwx----
+80212000 0000000080212000 00001000 rwx--a-
+80213000 0000000080213000 00001000 rwx----
+80214000 0000000080214000 00001000 rwx--ad
+80215000 0000000080215000 00001000 rwx----
+80216000 0000000080216000 00001000 rwx--ad
+80217000 0000000080217000 00009000 rwx----
+80220000 0000000080220000 00001000 rwx--ad
+80221000 0000000080221000 0001f000 rwx----
+80240000 0000000080240000 00001000 rwx--ad
+80241000 0000000080241000 001bf000 rwx----
+80400000 0000000080400000 00400000 rwx----
+80800000 0000000080800000 00400000 rwx----
+80c00000 0000000080c00000 00400000 rwx----
+81000000 0000000081000000 00400000 rwx----
+81400000 0000000081400000 00400000 rwx----
+81800000 0000000081800000 00400000 rwx----
+81c00000 0000000081c00000 00400000 rwx----
+82000000 0000000082000000 00400000 rwx----
+82400000 0000000082400000 00400000 rwx----
+82800000 0000000082800000 00400000 rwx----
+82c00000 0000000082c00000 00400000 rwx----
+83000000 0000000083000000 00400000 rwx----
+83400000 0000000083400000 00400000 rwx----
+83800000 0000000083800000 00400000 rwx----
+83c00000 0000000083c00000 00400000 rwx----
+84000000 0000000084000000 00241000 rwx----
+</code></pre>
+<p>The columns represent, in order: virtual address, physical address, size (in hexadecimal bytes), and attributes.</p>
+<p>Attributes are represented by a combination of <code>r</code> (readable), <code>w</code> (writable), <code>x</code> (executable), <code>a</code> (accessed), and <code>d</code> (written), where <code>a</code> and <code>d</code> indicate that the CPU has "accessed the page" and "written to the page" respectively. They are auxiliary information for the OS to keep track of which pages are actually being used/modified.</p>
+<blockquote class="callout callout-tip">
+<p>For beginners, debugging page table can be quite challenging. If things aren't working as expected, refer to the "Appendix: Debugging paging" section.</p>
+</blockquote>
+<h2 id="appendix-debugging-paging"><a class="anchor" href="11-page-table.html#appendix-debugging-paging">Appendix: Debugging paging</a></h2>
+<p>Setting up page tables can be tricky, and mistakes can be hard to notice. In this appendix, we'll look at some common paging errors and how to debug them.</p>
+<h3 id="forgetting-to-set-the-paging-mode"><a class="anchor" href="11-page-table.html#forgetting-to-set-the-paging-mode">Forgetting to set the paging mode</a></h3>
+<p>Let's say we forget to set the mode in the <code>satp</code> register:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c">    <span class="pl-k">__asm__</span> <span class="pl-en">__volatile__</span>(
+        <span class="pl-s"><span class="pl-pds">"</span>sfence.vma<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>csrw satp, %[satp]<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sfence.vma<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        :
+        : [satp] <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span> (((<span class="pl-c1">uint32_t</span>) next->page_table / PAGE_SIZE)) <span class="pl-c">// Missing SATP_SV32!</span>
+    );
+</code></pre>
+<p>However, when you run the OS, you'll see that it works as usual. This is because paging remains disabled and
+memory addresses are treated as physical addresses as before.</p>
+<p>To debug this case, try <code>info mem</code> command in the QEMU monitor. You'll see something like this:</p>
+<pre><code>(qemu) info mem
+No translation or protection
+</code></pre>
+<h3 id="specifying-physical-address-instead-of-physical-page-number"><a class="anchor" href="11-page-table.html#specifying-physical-address-instead-of-physical-page-number">Specifying physical address instead of physical page number</a></h3>
+<p>Let's say we mistakenly specify the page table using a physical <em>address</em> instead of a physical <em>page number</em>:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c">    <span class="pl-k">__asm__</span> <span class="pl-en">__volatile__</span>(
+        <span class="pl-s"><span class="pl-pds">"</span>sfence.vma<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>csrw satp, %[satp]<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        <span class="pl-s"><span class="pl-pds">"</span>sfence.vma<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>
+        :
+        : [satp] <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span> (SATP_SV32 | ((<span class="pl-c1">uint32_t</span>) next->page_table)) <span class="pl-c">// Forgot to shift!</span>
+    );
+</code></pre>
+<p>In this case, <code>info mem</code> will print no mappings:</p>
+<pre><code class="language-plain">$ ./run.sh
+
+QEMU 8.0.2 monitor - type 'help' for more information
+(qemu) stop
+(qemu) info mem
+vaddr    paddr            size     attr
+-------- ---------------- -------- -------
+</code></pre>
+<p>To debug this, dump registers to see what the CPU is doing:</p>
+<pre><code class="language-plain">(qemu) info registers
+
+CPU#0
+ V      =   0
+ pc       80200188
+ ...
+ scause   0000000c
+ ...
+</code></pre>
+<p>According to <code>llvm-addr2line</code>, <code>80200188</code> is the starting address of the exception handler. The exception reason in <code>scause</code> corresponds to "Instruction page fault".</p>
+<p>Let's take a closer look at what's specifically happening by examining the QEMU logs:</p>
+<pre><div class="code-block-title">run.sh</div><code class="language-bash"><span class="pl-smi">$QEMU</span> -machine virt -bios default -nographic -serial mon:stdio --no-reboot \
+    -d unimp,guest_errors,int,cpu_reset -D qemu.log <span class="pl-cce">\ </span> <span class="pl-c"># new!</span>
+    -kernel kernel.elf
+</code></pre>
+<pre><code class="language-plain">Invalid read at addr 0x253000800, size 4, region '(null)', reason: rejected
+riscv_cpu_do_interrupt: hart:0, async:0, cause:0000000c, epc:0x80200580, tval:0x80200580, desc=exec_page_fault
+Invalid read at addr 0x253000800, size 4, region '(null)', reason: rejected
+riscv_cpu_do_interrupt: hart:0, async:0, cause:0000000c, epc:0x80200188, tval:0x80200188, desc=exec_page_fault
+Invalid read at addr 0x253000800, size 4, region '(null)', reason: rejected
+riscv_cpu_do_interrupt: hart:0, async:0, cause:0000000c, epc:0x80200188, tval:0x80200188, desc=exec_page_fault
+</code></pre>
+<p>Here are what you can infer from the logs:</p>
+<ul>
+<li>
+<p><code>epc</code>, which indicates the location of the page fault exception, is <code>0x80200580</code>. <code>llvm-objdump</code> shows that it points to the instruction immediately after setting the <code>satp</code> register. This means that a page fault occurs right after enabling paging.</p>
+</li>
+<li>
+<p>All subsequent page faults show the same value. The exceptions occured at <code>0x80200188</code>, points to the starting address of the exception handler. Because this log continues indefinitely, the exceptions (page fault) occurs when trying to execute the exception handler.</p>
+</li>
+<li>
+<p>Looking at the <code>info registers</code> in QEMU monitor, <code>satp</code> is <code>0x80253000</code>. Calculating the physical address according to the specification: <code>(0x80253000 &#x26; 0x3fffff) * 4096 = 0x253000000</code>, which does not fit within a 32-bit address space. This indicates that an abnormal value has been set.</p>
+</li>
+</ul>
+<p>To summarize, you can investigate what's wrong by checking QEMU logs, register dumps, and memory dumps. However, the most important thing is to <em>"read the specification carefully."</em> It's very common to overlook or misinterpret it.</p></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="12-application.html">Application ⏩</a><a href="10-process.html" class="sm:-order-1">⏪ Process</a></div></footer></body></html>

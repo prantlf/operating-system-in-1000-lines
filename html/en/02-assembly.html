@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html><head><title>RISC-V 101 - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - RISC-V 101</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="font-bold">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><h2 id="risc-v"><a class="anchor" href="02-assembly.html#risc-v">RISC-V</a></h2>
+<p>Just like web browsers hide the differences between Windows/macOS/Linux, operating systems hide the differences between CPUs. In other words, operating system is a program which controls the CPU to provide an abstraction layer for applications.</p>
+<p>In this book, I chose RISC-V as the target CPU because:</p>
+<ul>
+<li><a href="https://riscv.org/technical/specifications/">The specification</a> is simple and suitable for beginners.</li>
+<li>It's a trending ISA (Instruction Set Architecture) in recent years, along with x86 and Arm.</li>
+<li>The design decisions are well-documented throughout the spec and they are fun to read.</li>
+</ul>
+<p>We will write an OS for <strong>32-bit</strong> RISC-V. Of course you can write for 64-bit RISC-V with only a few changes. However, the wider bit width makes it slightly more complex, and the longer addresses can be tedious to read.</p>
+<h2 id="qemu-virt-machine"><a class="anchor" href="02-assembly.html#qemu-virt-machine">QEMU virt machine</a></h2>
+<p>Computers are composed of various devices: CPU, memory, network cards, hard disks, and so on. For example, although iPhone and Raspberry Pi use Arm CPUs, it's natural to consider them as different computers.</p>
+<p>In this book, we support the QEMU <code>virt</code> machine (<a href="https://www.qemu.org/docs/master/system/riscv/virt.html">documentation</a>) because:</p>
+<ul>
+<li>Even though it does not exist in the real world, it's simple and very similar to real devices.</li>
+<li>You can emulate it on QEMU for free. You don't need to buy a physical hardware.</li>
+<li>When you encounter debugging issues, you can read QEMU's source code, or attach a debugger to the QEMU process to investigate what's wrong.</li>
+</ul>
+<h2 id="risc-v-assembly-101"><a class="anchor" href="02-assembly.html#risc-v-assembly-101">RISC-V assembly 101</a></h2>
+<p>RISC-V, or RISC-V ISA (Instruction Set Architecture), defines the instructions that the CPU can execute. It's smilar to APIs or programming language specifications for programmers. When you write a C program, the compiler translates it into RISC-V assembly. Unfortunately, you need to write some assembly code to write an OS. But don't worry! Assembly is not as difficult as you might think.</p>
+<blockquote class="callout callout-tip">
+<p><strong>Try Compiler Explorer!</strong></p>
+<p>A useful tool for learning assembly is <a href="https://godbolt.org/">Compiler Explorer</a>, an online compiler. As you type C code, it shows the corresponding assembly code.</p>
+<p>By default, Compiler Explorer uses x86-64 CPU assembly. Specify <code>RISC-V rv32gc clang (trunk)</code> in the right pane to output 32-bit RISC-V assembly.</p>
+<p>Also, it would be interesting to specify optimization options like <code>-O0</code> (optimization off) or <code>-O2</code> (optimization level 2) in the compiler options and see how the assembly changes.</p>
+</blockquote>
+<h3 id="assembly-language-basics"><a class="anchor" href="02-assembly.html#assembly-language-basics">Assembly language basics</a></h3>
+<p>Assembly language is a (mostly) direct representation of machine code. Let's take a look at a simple example:</p>
+<pre><code class="language-asm">addi a0, a1, 123
+</code></pre>
+<p>Typically, each line of assembly code corresponds to a single instruction. The first column (<code>addi</code>) is the instruction name, also known as the <em>opcode</em>. The following columns (<code>a0, a1, 123</code>) are the <em>operands</em>, the arguments for the instruction. In this case, the <code>addi</code> instruction adds the value <code>123</code> to the value in register <code>a1</code>, and stores the result in register <code>a0</code>.</p>
+<h3 id="registers"><a class="anchor" href="02-assembly.html#registers">Registers</a></h3>
+<p>Registers are like temporary variables in the CPU, and they are way faster than memory. CPU reads data from memory into registers, does arithmetic operations on registers, and writes the results back to memory/registers.</p>
+<p>Here are some common registers in RISC-V:</p>
+<table>
+<thead>
+<tr>
+<th>Register</th>
+<th>ABI Name (alias)</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pc</code></td>
+<td><code>pc</code></td>
+<td>Program counter (where the next instruction is)</td>
+</tr>
+<tr>
+<td><code>x0</code></td>
+<td><code>zero</code></td>
+<td>Hardwired zero (always reads as zero)</td>
+</tr>
+<tr>
+<td><code>x1</code></td>
+<td><code>ra</code></td>
+<td>Return address</td>
+</tr>
+<tr>
+<td><code>x2</code></td>
+<td><code>sp</code></td>
+<td>Stack pointer</td>
+</tr>
+<tr>
+<td><code>x5</code> - <code>x7</code></td>
+<td><code>t0</code> - <code>t2</code></td>
+<td>Temporary registers</td>
+</tr>
+<tr>
+<td><code>x8</code></td>
+<td><code>fp</code></td>
+<td>Stack frame pointer</td>
+</tr>
+<tr>
+<td><code>x10</code> - <code>x11</code></td>
+<td><code>a0</code> - <code>a1</code></td>
+<td>Function arguments/return values</td>
+</tr>
+<tr>
+<td><code>x12</code> - <code>x17</code></td>
+<td><code>a2</code> - <code>a7</code></td>
+<td>Function arguments</td>
+</tr>
+<tr>
+<td><code>x18</code> - <code>x27</code></td>
+<td><code>s0</code> - <code>s11</code></td>
+<td>Temporary registers saved across calls</td>
+</tr>
+<tr>
+<td><code>x28</code> - <code>x31</code></td>
+<td><code>t3</code> - <code>t6</code></td>
+<td>Temporary registers</td>
+</tr>
+</tbody>
+</table>
+<blockquote class="callout callout-tip">
+<p><strong>Calling convention:</strong></p>
+<p>Generally, you may use CPU registers as you like, but for the sake of interoperability with other software, how registers are used is well defined - this is called the <em>calling convention</em>.</p>
+<p>For example, <code>x10</code> - <code>x11</code> registers are used for function arguments and return values. For human readability, they are given aliases like <code>a0</code> - <code>a1</code> in the ABI. Check <a href="https://riscv.org/wp-content/uploads/2015/01/riscv-calling.pdf">the spec</a> for more details.</p>
+</blockquote>
+<h3 id="memory-access"><a class="anchor" href="02-assembly.html#memory-access">Memory access</a></h3>
+<p>Registers are really fast, but they are limited in number. Most of data are stored in memory, and programs reads/writes data from/to memory using the <code>lw</code> (load word) and <code>sw</code> (store word) instructions:</p>
+<pre><code class="language-asm">lw a0, (a1)  // Read a word (32-bits) from address in a1
+             // and store it in a0. In C, this would be: a0 = *a1;
+</code></pre>
+<pre><code class="language-asm">sw a0, (a1)  // Store a word in a0 to the address in a1.
+             // In C, this would be: *a1 = a0;
+</code></pre>
+<p>You can consider <code>(...)</code> as a pointer dereference in C language. In this case, <code>a1</code> is a pointer to a 32-bits-wide value.</p>
+<h3 id="branch-instructions"><a class="anchor" href="02-assembly.html#branch-instructions">Branch instructions</a></h3>
+<p>Branch instructions change the control flow of the program. They are used to implement <code>if</code>, <code>for</code>, and <code>while</code> statements,</p>
+<pre><code class="language-asm">    bnez    a0, &#x3C;label>   // Go to &#x3C;label> if a0 is not zero
+    // If a0 is zero, continue here
+
+&#x3C;label>:
+    // If a0 is not zero, continue here
+</code></pre>
+<p><code>bnez</code> stands for "branch if not equal to zero". Other common branch instructions include <code>beq</code> (branch if equal) and <code>blt</code> (branch if less than). They are similar to <code>goto</code> in C, but with conditions.</p>
+<h3 id="function-calls"><a class="anchor" href="02-assembly.html#function-calls">Function calls</a></h3>
+<p><code>jal</code> (jump and link) and <code>ret</code> (return) instructions are used for calling functions and returning from them:</p>
+<pre><code class="language-asm">    li  a0, 123      // Load 123 to a0 register (function argument)
+    jal ra, &#x3C;label>  // Jump to &#x3C;label> and store the return address
+                     // in the ra register.
+
+    // After the function call, continue here...
+
+// int func(int a) {
+//   a += 1;
+//   return a;
+// }
+&#x3C;label>:
+    addi a0, a0, 1    // Increment a0 (first argument) by 1
+
+    ret               // Return to the address stored in ra.
+                      // a0 register has the return value.
+</code></pre>
+<p>Function arguments are passed in <code>a0</code> - <code>a7</code> registers, and the return value is stored in <code>a0</code> register, as per the calling convention.</p>
+<h3 id="stack"><a class="anchor" href="02-assembly.html#stack">Stack</a></h3>
+<p>Stack is a Last-In-First-Out (LIFO) memory space used for function calls and local variables. It grows downwards, and the stack pointer <code>sp</code> points to the top of the stack.</p>
+<p>To save a value into the stack, decrement the stack pointer and store the value (aka. <em>push</em> operation):</p>
+<pre><code class="language-asm">    addi sp, sp, -4  // Move the stack pointer down by 4 bytes
+                     // (i.e. stack allocation).
+
+    sw   a0, (sp)    // Store a0 to the stack
+</code></pre>
+<p>To load a value from the stack, load the value and increment the stack pointer (aka. <em>pop</em> operation):</p>
+<pre><code class="language-asm">    lw   a0, (sp)    // Load a0 from the stack
+    addi sp, sp, 4   // Move the stack pointer up by 4 bytes
+                     // (i.e. stack deallocation).
+</code></pre>
+<blockquote class="callout callout-tip">
+<p>In C, stack operations are generated by the compiler, so you don't have to write them manually.</p>
+</blockquote>
+<h2 id="cpu-modes"><a class="anchor" href="02-assembly.html#cpu-modes">CPU modes</a></h2>
+<p>CPU has multiple modes, each with different privileges. In RISC-V, there are three modes:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Overview</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>M-mode</td>
+<td>Mode in which OpenSBI (i.e. BIOS) operates.</td>
+</tr>
+<tr>
+<td>S-mode</td>
+<td>Mode in which the kernel operates, aka. "kernel mode".</td>
+</tr>
+<tr>
+<td>U-mode</td>
+<td>Mode in which applications operate, aka. "user mode".</td>
+</tr>
+</tbody>
+</table>
+<h2 id="privileged-instructions"><a class="anchor" href="02-assembly.html#privileged-instructions">Privileged instructions</a></h2>
+<p>Among CPU instructions, there are types called privileged instructions that applications (user mode) cannot execute. In this book, we use the following privileged instructions:</p>
+<table>
+<thead>
+<tr>
+<th>Opcode and operands</th>
+<th>Overview</th>
+<th>Pseudocode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>csrr rd, csr</code></td>
+<td>Read from CSR</td>
+<td><code>rd = csr;</code></td>
+</tr>
+<tr>
+<td><code>csrw csr, rs</code></td>
+<td>Write to CSR</td>
+<td><code>csr = rs;</code></td>
+</tr>
+<tr>
+<td><code>csrrw rd, csr, rs</code></td>
+<td>Read from and write to CSR at once</td>
+<td><code>tmp = csr; csr = rs; rd = tmp;</code></td>
+</tr>
+<tr>
+<td><code>sret</code></td>
+<td>Return from trap handler (restoring program counter, operation mode, etc.)</td>
+<td></td>
+</tr>
+<tr>
+<td><code>sfence.vma</code></td>
+<td>Clear Translation Lookaside Buffer (TLB)</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><strong>CSR (Control and Status Register)</strong> is a register that stores CPU settings. The list of CSRs can be found in <a href="https://riscv.org/specifications/privileged-isa/">RISC-V Privileged Specification</a>.</p>
+<blockquote class="callout callout-tip">
+<p>Some instructions like <code>sret</code> do some somewhat complex operations. To understand what actually happens, reading RISC-V emulator source code might be helpful. Particularly, <a href="https://github.com/d0iasm/rvemu">rvemu</a> is written in a intuitive and easy-to-understand way (e.g. <a href="https://github.com/d0iasm/rvemu/blob/f55eb5b376f22a73c0cf2630848c03f8d5c93922/src/cpu.rs#L3357-L3400">sret implementation</a>).</p>
+</blockquote>
+<h2 id="inline-assembly"><a class="anchor" href="02-assembly.html#inline-assembly">Inline assembly</a></h2>
+<p>In following chapters, you'll encounter special C language syntax like this:</p>
+<pre><code class="language-c"><span class="pl-c1">uint32_t</span> value;
+<span class="pl-k">__asm__</span> <span class="pl-en">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>csrr %0, sepc<span class="pl-pds">"</span></span> : <span class="pl-s"><span class="pl-pds">"</span>=r<span class="pl-pds">"</span></span>(value));
+</code></pre>
+<p>This is <em>"inline assembly"</em>, a syntax for embedding assembly into C code. While you can write assembly in a separate file (<code>.S</code> extension), using inline assembly are generally preferred because:</p>
+<ul>
+<li>You can use C variables within the assembly. Also, you can assign the results of assembly to C variables.</li>
+<li>You can leave register allocation to the C compiler. That is, you don't have to manually write the preservation and restoration of registers to be modified in the assembly.</li>
+</ul>
+<h3 id="how-to-write-inline-assembly"><a class="anchor" href="02-assembly.html#how-to-write-inline-assembly">How to write inline assembly</a></h3>
+<p>Inline assembly is written in the following format:</p>
+<pre><code class="language-c"><span class="pl-k">__asm__</span> <span class="pl-en">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>assembly<span class="pl-pds">"</span></span> : output operands : input operands : clobbered registers);
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Part</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__asm__</code></td>
+<td>Indicates it's an inline assembly.</td>
+</tr>
+<tr>
+<td><code>__volatile__</code></td>
+<td>Tell the compiler not optimize the <code>"assembly"</code> code.</td>
+</tr>
+<tr>
+<td><code>"assembly"</code></td>
+<td>Assembly code written as a string literal.</td>
+</tr>
+<tr>
+<td>output operands</td>
+<td>C variables to store the results of the assembly.</td>
+</tr>
+<tr>
+<td>input operands</td>
+<td>C expressions (e.g. <code>123</code>, <code>x</code>) to be used in the assembly.</td>
+</tr>
+<tr>
+<td>clobbered registers</td>
+<td>Registers whose contents are destroyed in the assembly. If forgotten, the C compiler won't preserve the contents of these registers and would cause a bug.</td>
+</tr>
+</tbody>
+</table>
+<p>Output and input operands are comma-separated, and each operand is written in the format <code>constraint (C expression)</code>. Constraints are used to specify the type of operand, and usually <code>=r</code> (register) for output operands, and <code>r</code> for input operands.</p>
+<p>Output and input operands can be accessed in the assembly using <code>%0</code>, <code>%1</code>, <code>%2</code>, etc., in order starting from the output operands.</p>
+<h3 id="examples"><a class="anchor" href="02-assembly.html#examples">Examples</a></h3>
+<pre><code class="language-c"><span class="pl-c1">uint32_t</span> value;
+<span class="pl-k">__asm__</span> <span class="pl-en">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>csrr %0, sepc<span class="pl-pds">"</span></span> : <span class="pl-s"><span class="pl-pds">"</span>=r<span class="pl-pds">"</span></span>(value));
+</code></pre>
+<p>This reads the value of the <code>sepc</code> CSR using the <code>csrr</code> instruction, and assigns it to the <code>value</code> variable. <code>%0</code> corresponds to the <code>value</code> variable.</p>
+<pre><code class="language-c"><span class="pl-k">__asm__</span> <span class="pl-en">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>csrw sscratch, %0<span class="pl-pds">"</span></span> : : <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(<span class="pl-c1">123</span>));
+</code></pre>
+<p>This writes <code>123</code> to the <code>sscratch</code> CSR, using the <code>csrw</code> instruction. <code>%0</code> corresponds to the register containing <code>123</code> (<code>r</code> constraint), and it would actually look like:</p>
+<pre><code>li    a0, 123        // Set 123 to a0 register
+csrw  sscratch, a0   // Write the value of a0 register to sscratch register
+</code></pre>
+<p>Although only the <code>csrw</code> instruction is written in the inline assembly, the <code>li</code> instruction is automatically inserted by the compiler to satisfy the <code>"r"</code> constraint (value in a register). It's super convenient!</p>
+<blockquote class="callout callout-tip">
+<p>Inline assembly is a compiler-specific extension not included in the C language specification. You can check detailed usage in the <a href="https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html">GCC documentation</a>. However, it takes time to understand because constraint syntax differs depending on CPU architecture, and it has many complex functionalities.</p>
+<p>For beginners, I recommend to search for real-world examples. For instance, <a href="https://github.com/nuta/microkernel-book/blob/52d66bd58cd95424f009e2df8bc1184f6ffd9395/kernel/riscv32/asm.h">HinaOS</a> and <a href="https://github.com/mit-pdos/xv6-riscv/blob/riscv/kernel/riscv.h">xv6-riscv</a> are good references.</p>
+</blockquote></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="03-overview.html">Overview ⏩</a><a href="01-setting-up-development-environment.html" class="sm:-order-1">⏪ Getting Started</a></div></footer></body></html>

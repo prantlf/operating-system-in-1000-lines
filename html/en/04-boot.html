@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html><head><title>Boot - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - Boot</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="font-bold">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><p>When a computer is turned on, the CPU initializes itself and starts executing the OS. OS initializes the hardware and starts the applications. This process is called "booting".</p>
+<p>What happens before the OS starts? In PCs, BIOS (or UEFI in modern PCs) initializes the hardware, displays the splash screen, and loads the OS from the disk. In QEMU <code>virt</code> machine, OpenSBI is the equivalent of BIOS/UEFI.</p>
+<h2 id="supervisor-binary-interface-sbi"><a class="anchor" href="04-boot.html#supervisor-binary-interface-sbi">Supervisor Binary Interface (SBI)</a></h2>
+<p>The Supervisor Binary Interface (SBI) is an API for OS kernels, but defines what the firmware (OpenSBI) provides to an OS.</p>
+<p>The SBI specification is <a href="https://github.com/riscv-non-isa/riscv-sbi-doc/releases">published on GitHub</a>. It defines useful features such as displaying characters on the debug console (e.g., serial port), reboot/shutdown, and timer settings.</p>
+<p>A famous SBI implementation is <a href="https://github.com/riscv-software-src/opensbi">OpenSBI</a>. In QEMU, OpenSBI starts by default, performs hardware-specific initialization, and boots the kernel.</p>
+<h2 id="lets-boot-opensbi"><a class="anchor" href="04-boot.html#lets-boot-opensbi">Let's boot OpenSBI</a></h2>
+<p>First, let's see how OpenSBI starts. Create a shell script named <code>run.sh</code> as follows:</p>
+<pre><code class="language-plain">$ touch run.sh
+$ chmod +x run.sh
+</code></pre>
+<pre><div class="code-block-title">run.sh</div><code class="language-bash"><span class="pl-c">#!/bin/bash</span>
+<span class="pl-c1">set</span> -xue
+
+<span class="pl-c"># QEMU file path</span>
+QEMU=qemu-system-riscv32
+
+<span class="pl-c"># Start QEMU</span>
+<span class="pl-smi">$QEMU</span> -machine virt -bios default -nographic -serial mon:stdio --no-reboot
+</code></pre>
+<p>QEMU takes various options to start the virtual machine. Here are the options used in the script:</p>
+<ul>
+<li><code>-machine virt</code>: Start a <code>virt</code> machine. You can check other supported machines with the <code>-machine '?'</code> option.</li>
+<li><code>-bios default</code>: Use the default firmware (OpenSBI in this case).</li>
+<li><code>-nographic</code>: Start QEMU without a GUI window.</li>
+<li><code>-serial mon:stdio</code>: Connect QEMU's standard input/output to the virtual machine's serial port. Specifying <code>mon:</code> allows switching to the QEMU monitor by pressing Ctrl+A then C.</li>
+<li><code>--no-reboot</code>: If the virtual machine crashes, stop the emulator without rebooting (useful for debugging).</li>
+</ul>
+<blockquote class="callout callout-tip">
+<p>In macOS, you can check the path to Homebrew's QEMU with the following command:</p>
+<pre><code class="language-plain">$ ls $(brew --prefix)/bin/qemu-system-riscv32
+/opt/homebrew/bin/qemu-system-riscv32
+</code></pre>
+</blockquote>
+<p>Run the script and you will see the following banner:</p>
+<pre><code class="language-plain">$ ./run.sh
+
+OpenSBI v1.2
+   ____                    _____ ____ _____
+  / __ \                  / ____|  _ \_   _|
+ | |  | |_ __   ___ _ __ | (___ | |_) || |
+ | |  | | '_ \ / _ \ '_ \ \___ \|  _ &#x3C; | |
+ | |__| | |_) |  __/ | | |____) | |_) || |_
+  \____/| .__/ \___|_| |_|_____/|____/_____|
+        | |
+        |_|
+
+Platform Name             : riscv-virtio,qemu
+Platform Features         : medeleg
+Platform HART Count       : 1
+Platform IPI Device       : aclint-mswi
+Platform Timer Device     : aclint-mtimer @ 10000000Hz
+...
+</code></pre>
+<p>OpenSBI displays the OpenSBI version, platform name, features, number of HARTs (CPU cores), and more for debugging purposes.</p>
+<p>When you press any key, nothing will happen. This is because QEMU's standard input/output is connected to the virtual machine's serial port, and the characters you type are being sent to the OpenSBI. However, no one reads the input characters.</p>
+<p>Press Ctrl+A then C to switch to the QEMU debug console (QEMU monitor). You can exit QEMU by <code>q</code> command in the monitor:</p>
+<pre><code class="language-plain">QEMU 8.0.2 monitor - type 'help' for more information
+(qemu) q
+</code></pre>
+<blockquote class="callout callout-tip">
+<p>Ctrl+A has several features besides switching to the QEMU monitor (C key). For example, pressing the X key will immediately exit QEMU.</p>
+<pre><code class="language-plain">C-a h    print this help
+C-a x    exit emulator
+C-a s    save disk data back to file (if -snapshot)
+C-a t    toggle console timestamps
+C-a b    send break (magic sysrq)
+C-a c    switch between console and monitor
+C-a C-a  sends C-a
+</code></pre>
+</blockquote>
+<h2 id="linker-script"><a class="anchor" href="04-boot.html#linker-script">Linker script</a></h2>
+<p>A linker script is a file which defines the memory layout of executable files. Based on the layout, the linker assigns memory addresses to functions and variables.</p>
+<p>Let's create a new file named <code>kernel.ld</code>:</p>
+<pre><div class="code-block-title">kernel.ld</div><code class="language-plain">ENTRY(boot)
+
+SECTIONS {
+    . = 0x80200000;
+
+    .text :{
+        KEEP(*(.text.boot));
+        *(.text .text.*);
+    }
+
+    .rodata : ALIGN(4) {
+        *(.rodata .rodata.*);
+    }
+
+    .data : ALIGN(4) {
+        *(.data .data.*);
+    }
+
+    .bss : ALIGN(4) {
+        __bss = .;
+        *(.bss .bss.* .sbss .sbss.*);
+        __bss_end = .;
+    }
+
+    . = ALIGN(4);
+    . += 128 * 1024; /* 128KB */
+    __stack_top = .;
+}
+</code></pre>
+<p>Here are the key points of the linker script:</p>
+<ul>
+<li>The entry point of the kernel is the <code>boot</code> function.</li>
+<li>The base address is <code>0x80200000</code>.</li>
+<li>The <code>.text.boot</code> section is always placed at the beginning.</li>
+<li>Each section is placed in the order of <code>.text</code>, <code>.rodata</code>, <code>.data</code>, and <code>.bss</code>.</li>
+<li>The kernel stack comes after the <code>.bss</code> section, and its size is 128KB.</li>
+</ul>
+<p><code>.text</code>, <code>.rodata</code>, <code>.data</code>, and <code>.bss</code> sections mentioned here are data areas with specific roles:</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.text</code></td>
+<td>This section contains the code of the program.</td>
+</tr>
+<tr>
+<td><code>.rodata</code></td>
+<td>This section contains constant data that is read-only.</td>
+</tr>
+<tr>
+<td><code>.data</code></td>
+<td>This section contains read/write data.</td>
+</tr>
+<tr>
+<td><code>.bss</code></td>
+<td>This section contains read/write data with an initial value of zero.</td>
+</tr>
+</tbody>
+</table>
+<p>Let's take a closer look at the syntax of the linker script. First, <code>ENTRY(boot)</code> declares that the <code>boot</code> function is the entry point of the program. Then, the placement of each section is defined within the <code>SECTIONS</code> block.</p>
+<p>The <code>*(.text .text.*)</code> directive places the <code>.text</code> section and any sections starting with <code>.text.</code> from all files (<code>*</code>) at that location.</p>
+<p>The <code>.</code> symbol represents the current address. It automatically increments as data is placed, such as with <code>*(.text)</code>. The statement <code>. += 128 * 1024</code> means "advance the current address by 128KB". The <code>ALIGN(4)</code> directive ensures that the current address is adjusted to a 4-byte boundary.</p>
+<p>Finally, <code>__bss = .</code> assigns the current address to the symbol <code>__bss</code>. In C language, you can refer to a defined symbol using <code>extern char symbol_name</code>.</p>
+<blockquote class="callout callout-tip">
+<p>Linker scripts offer many convenient features, especially for kernel development. You can find real-world examples on GitHub!</p>
+</blockquote>
+<h2 id="minimal-kernel"><a class="anchor" href="04-boot.html#minimal-kernel">Minimal kernel</a></h2>
+<p>We're now ready to start writing the kernel. Let's start by creating a minimal one! Create a C language source code file named <code>kernel.c</code>:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">typedef</span> <span class="pl-k">unsigned</span> <span class="pl-k">char</span> <span class="pl-c1">uint8_t</span>;
+<span class="pl-k">typedef</span> <span class="pl-k">unsigned</span> <span class="pl-k">int</span> <span class="pl-c1">uint32_t</span>;
+<span class="pl-k">typedef</span> <span class="pl-c1">uint32_t</span> <span class="pl-c1">size_t</span>;
+
+<span class="pl-k">extern</span> <span class="pl-k">char</span> __bss[], __bss_end[], __stack_top[];
+
+<span class="pl-k">void</span> *<span class="pl-en">memset</span>(<span class="pl-k">void</span> *buf, <span class="pl-k">char</span> c, <span class="pl-c1">size_t</span> n) {
+    <span class="pl-c1">uint8_t</span> *p = (<span class="pl-c1">uint8_t</span> *) buf;
+    <span class="pl-k">while</span> (n--)
+        *p++ = c;
+    <span class="pl-k">return</span> buf;
+}
+
+<span class="pl-k">void</span> <span class="pl-en">kernel_main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">memset</span>(__bss, <span class="pl-c1">0</span>, (<span class="pl-c1">size_t</span>) __bss_end - (<span class="pl-c1">size_t</span>) __bss);
+
+    <span class="pl-k">for</span> (;;);
+}
+
+<span class="pl-en">__attribute__</span>((section(<span class="pl-s"><span class="pl-pds">"</span>.text.boot<span class="pl-pds">"</span></span>)))
+__attribute__((naked))
+void boot(<span class="pl-k">void</span>) {
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(
+        <span class="pl-s"><span class="pl-pds">"</span>mv sp, %[stack_top]<span class="pl-cce">\n</span><span class="pl-pds">"</span></span> <span class="pl-c">// Set the stack pointer</span>
+        <span class="pl-s"><span class="pl-pds">"</span>j kernel_main<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>       <span class="pl-c">// Jump to the kernel main function</span>
+        :
+        : [stack_top] <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span> (__stack_top) <span class="pl-c">// Pass the stack top address as %[stack_top]</span>
+    );
+}
+</code></pre>
+<p>Let's explore the key points one by one:</p>
+<h3 id="the-kernel-entry-point"><a class="anchor" href="04-boot.html#the-kernel-entry-point">The kernel entry point</a></h3>
+<p>The execution of the kernel starts from the <code>boot</code> function, which is specified as the entry point in the linker script. In this function, the stack pointer (<code>sp</code>) is set to the end address of the stack area defined in the linker script. Then, it jumps to the <code>kernel_main</code> function. It's important to note that the stack grows towards zero, meaning it is decremented as it is used. Therefore, the end address (not the start address) of the stack area must be set.</p>
+<h3 id="boot-function-attributes"><a class="anchor" href="04-boot.html#boot-function-attributes"><code>boot</code> function attributes</a></h3>
+<p>The <code>boot</code> function has two special attributes. The <code>__attribute__((naked))</code> attribute instructs the compiler not to generate unnecessary code before and after the function body, such as a return instruction. This ensures that the inline assembly code is the exact function body.</p>
+<p>The <code>boot</code> function also has the <code>__attribute__((section(".text.boot")))</code> attribute, which controls the placement of the function in the linker script. Since OpenSBI simply jumps to <code>0x80200000</code> without knowing the entry point, the <code>boot</code> function needs to be placed at <code>0x80200000</code>.</p>
+<h3 id="extern-char-to-get-linker-script-symbols"><a class="anchor" href="04-boot.html#extern-char-to-get-linker-script-symbols"><code>extern char</code> to get linker script symbols</a></h3>
+<p>At the beginning of the file, each symbol defined in the linker script is declared using <code>extern char</code>. Here, we are only interested in obtaining the addresses of the symbols, so using <code>char</code> type is not that important.</p>
+<p>We can also declare it as <code>extern char __bss;</code>, but <code>__bss</code> alone meands <em>"the value at the 0th byte of the <code>.bss</code> section"</em> instead of <em>"the start address of the <code>.bss</code> section"</em>. Therefore, it is recommended to add <code>[]</code> to ensure that <code>__bss</code> returns an address and prevent any careless mistakes.</p>
+<h3 id="bss-section-initialization"><a class="anchor" href="04-boot.html#bss-section-initialization"><code>.bss</code> section initialization</a></h3>
+<p>In the <code>kernel_main</code> function, the <code>.bss</code> section is first initialized to zero using the <code>memset</code> function. Although some bootloaders may recognize and zero-clear the <code>.bss</code> section, but we initialize it manually just in case. Finally, the function enters an infinite loop and the kernel terminates.</p>
+<h2 id="lets-run"><a class="anchor" href="04-boot.html#lets-run">Let's run!</a></h2>
+<p>Add a kernel build command and a new QEMU option (<code>-kernel kernel.elf</code>) to <code>run.sh</code>:</p>
+<pre><div class="code-block-title">run.sh</div><code class="language-bash"><span class="pl-c">#!/bin/bash</span>
+<span class="pl-c1">set</span> -xue
+
+QEMU=qemu-system-riscv32
+
+<span class="pl-c"># new: Path to clang and compiler flags</span>
+CC=/opt/homebrew/opt/llvm/bin/clang  <span class="pl-c"># Ubuntu users: use CC=clang</span>
+CFLAGS=<span class="pl-s"><span class="pl-pds">"</span>-std=c11 -O2 -g3 -Wall -Wextra --target=riscv32 -ffreestanding -nostdlib<span class="pl-pds">"</span></span>
+
+<span class="pl-c"># new: Build the kernel</span>
+<span class="pl-smi">$CC</span> <span class="pl-smi">$CFLAGS</span> -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf \
+    kernel.c
+
+<span class="pl-c"># Start QEMU</span>
+<span class="pl-smi">$QEMU</span> -machine virt -bios default -nographic -serial mon:stdio --no-reboot \
+    -kernel kernel.elf <span class="pl-c"># new: Load the kernel</span>
+</code></pre>
+<blockquote class="callout callout-tip">
+<p>You can check the file path of the Homebrew version of clang on macOS with the following command:</p>
+<pre><code>$ ls $(brew --prefix)/opt/llvm/bin/clang
+/opt/homebrew/opt/llvm/bin/clang
+</code></pre>
+</blockquote>
+<p>The specified clang options (<code>CFLAGS</code> variable) are as follows:</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-std=c11</code></td>
+<td>Use C11.</td>
+</tr>
+<tr>
+<td><code>-O2</code></td>
+<td>Enable optimizations to generate efficient machine code.</td>
+</tr>
+<tr>
+<td><code>-g3</code></td>
+<td>Generate the maximum amount of debug information.</td>
+</tr>
+<tr>
+<td><code>-Wall</code></td>
+<td>Enable major warnings.</td>
+</tr>
+<tr>
+<td><code>-Wextra</code></td>
+<td>Enable additional warnings.</td>
+</tr>
+<tr>
+<td><code>--target=riscv32</code></td>
+<td>Compile for 32-bit RISC-V.</td>
+</tr>
+<tr>
+<td><code>-ffreestanding</code></td>
+<td>Do not use the standard library of the host environment (your development environment).</td>
+</tr>
+<tr>
+<td><code>-nostdlib</code></td>
+<td>Do not link the standard library.</td>
+</tr>
+<tr>
+<td><code>-Wl,-Tkernel.ld</code></td>
+<td>Specify the linker script.</td>
+</tr>
+<tr>
+<td><code>-Wl,-Map=kernel.map</code></td>
+<td>Output a map file (linker allocation result).</td>
+</tr>
+</tbody>
+</table>
+<p><code>-Wl,</code> means passing options to the linker instead of the C compiler. <code>clang</code> command does C compilation and executes the linker internally.</p>
+<h2 id="your-first-kernel-debugging"><a class="anchor" href="04-boot.html#your-first-kernel-debugging">Your first kernel debugging</a></h2>
+<p>When you run <code>run.sh</code>, the kernel enters an infinite loop. There are no indications that the kernel is running correctly. But don't worry, this is quite common in low-level development! This is where QEMU's debugging features come in.</p>
+<p>To get more information about the CPU registers, open the QEMU monitor and execute the <code>info registers</code> command:</p>
+<pre><code class="language-plain">QEMU 8.0.2 monitor - type 'help' for more information
+(qemu) info registers
+
+CPU#0
+ V      =   0
+ pc       80200014  ← Address of the instruction to be executed (Program Counter)
+ ...
+ x0/zero  00000000 x1/ra    8000a084 x2/sp    80220018 x3/gp    00000000  ← Values of each register
+ x4/tp    80033000 x5/t0    00000001 x6/t1    00000002 x7/t2    00000000
+ x8/s0    80032f50 x9/s1    00000001 x10/a0   80220018 x11/a1   87e00000
+ x12/a2   00000007 x13/a3   00000019 x14/a4   00000000 x15/a5   00000001
+ x16/a6   00000001 x17/a7   00000005 x18/s2   80200000 x19/s3   00000000
+ x20/s4   87e00000 x21/s5   00000000 x22/s6   80006800 x23/s7   8001c020
+ x24/s8   00002000 x25/s9   8002b4e4 x26/s10  00000000 x27/s11  00000000
+ x28/t3   616d6569 x29/t4   8001a5a1 x30/t5   000000b4 x31/t6   00000000
+</code></pre>
+<blockquote class="callout callout-tip">
+<p>The exact values may differ depending on the versions of clang and QEMU.</p>
+</blockquote>
+<p><code>pc 80200014</code> shows the current program counter, the address of the instruction being executed. Let's use the disassembler (<code>llvm-objdump</code>) to narrow down the specific line of code:</p>
+<pre><code class="language-plain">$ llvm-objdump -d kernel.elf
+
+kernel.elf:     file format elf32-littleriscv
+
+Disassembly of section .text:
+
+80200000 &#x3C;boot>:  ← boot function
+80200000: 37 05 22 80   lui     a0, 524832
+80200004: 13 05 85 01   addi    a0, a0, 24
+80200008: 2a 81         mv      sp, a0
+8020000a: 6f 00 60 00   j       0x80200010 &#x3C;kernel_main>
+8020000e: 00 00         unimp
+
+80200010 &#x3C;kernel_main>:  ← kernel_main function
+80200010: 73 00 50 10   wfi
+80200014: f5 bf         j       0x80200010 &#x3C;kernel_main>  ← pc is here
+</code></pre>
+<p>Each line corresponds to an instruction. Each column represents:</p>
+<ul>
+<li>The address of the instruction.</li>
+<li>Hexadecimal dump of the machine code.</li>
+<li>Disassembled instructions.</li>
+</ul>
+<p><code>pc 80200014</code> means the currently executed instruction is <code>j 0x80200010</code>. This confirms that QEMU has correctly reached the <code>kernel_main</code> function.</p>
+<p>Let's also check if the stack pointer (sp register) is set to the value of <code>__stack_top</code> defined in the linker script. The register dump shows <code>x2/sp 80220018</code>. To see where the linker placed <code>__stack_top</code>, check <code>kernel.map</code> file:</p>
+<pre><code class="language-plain">     VMA      LMA     Size Align Out     In      Symbol
+       0        0 80200000     1 . = 0x80200000
+80200000 80200000       16     4 .text
+...
+80200016 80200016        2     1 . = ALIGN ( 4 )
+80200018 80200018    20000     1 . += 128 * 1024
+80220018 80220018        0     1 __stack_top = .
+</code></pre>
+<p>Alternatively, you can also check the addresses of functions/variables using <code>llvm-nm</code>:</p>
+<pre><code class="language-plain">$ llvm-nm kernel.elf
+80200010 t .LBB0_1
+00000000 N .Lline_table_start0
+80220018 T __stack_top
+80200000 T boot
+80200010 T kernel_main
+</code></pre>
+<p>The first column is the address where they are placed (VMA). You can see that <code>__stack_top</code> is placed at <code>0x80220018</code>. This confirms that the stack pointer is correctly set in the <code>boot</code> function. Nice!</p>
+<p>As execution progresses, the results of <code>info registers</code> will change. If you want to temporarily stop the emulation, you can use the <code>stop</code> command in the QEMU monitor:</p>
+<pre><code class="language-plain">(qemu) stop             ← The process stops
+(qemu) info registers   ← You can observe the state at the stop
+(qemu) cont             ← The process resumes
+</code></pre>
+<p>Now you've successfully written your first kernel!</p></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="05-hello-world.html">Hello World! ⏩</a><a href="03-overview.html" class="sm:-order-1">⏪ Overview</a></div></footer></body></html>

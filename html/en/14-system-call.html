@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html><head><title>System Call - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - System Call</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="font-bold">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><p>In this chapter, we will implement <em>"system calls"</em> that allow applications to invoke kernel functions. Time to Hello World from the userland!</p>
+<h2 id="user-library"><a class="anchor" href="14-system-call.html#user-library">User library</a></h2>
+<p>Invoking system call is quite similar to <a href="05-hello-world.html#say-hello-to-sbi">the SBI call implementation</a> we've seen before:</p>
+<pre><div class="code-block-title">user.c</div><code class="language-c"><span class="pl-k">int</span> <span class="pl-en">syscall</span>(<span class="pl-k">int</span> sysno, <span class="pl-k">int</span> arg0, <span class="pl-k">int</span> arg1, <span class="pl-k">int</span> arg2) {
+    <span class="pl-k">register</span> <span class="pl-k">int</span> a0 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a0<span class="pl-pds">"</span></span>) = arg0;
+    <span class="pl-k">register</span> <span class="pl-k">int</span> a1 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a1<span class="pl-pds">"</span></span>) = arg1;
+    <span class="pl-k">register</span> <span class="pl-k">int</span> a2 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a2<span class="pl-pds">"</span></span>) = arg2;
+    <span class="pl-k">register</span> <span class="pl-k">int</span> a3 <span class="pl-smi">__asm__</span>(<span class="pl-s"><span class="pl-pds">"</span>a3<span class="pl-pds">"</span></span>) = sysno;
+
+    <span class="pl-k">__asm__</span> <span class="pl-smi">__volatile__</span>(<span class="pl-s"><span class="pl-pds">"</span>ecall<span class="pl-pds">"</span></span>
+                         : <span class="pl-s"><span class="pl-pds">"</span>=r<span class="pl-pds">"</span></span>(a0)
+                         : <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a0), <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a1), <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a2), <span class="pl-s"><span class="pl-pds">"</span>r<span class="pl-pds">"</span></span>(a3)
+                         : <span class="pl-s"><span class="pl-pds">"</span>memory<span class="pl-pds">"</span></span>);
+
+    <span class="pl-k">return</span> a0;
+}
+</code></pre>
+<p>The <code>syscall</code> function sets the system call number in the <code>a3</code> register and the system call arguments in the <code>a0</code> to <code>a2</code> registers, then executes the <code>ecall</code> instruction. The <code>ecall</code> instruction is a special instruction used to delegate processing to the kernel. When the <code>ecall</code> instruction is executed, an exception handler is called, and control is transferred to the kernel. The return value from the kernel is set in the <code>a0</code> register.</p>
+<p>The first system call we will implement is <code>putchar</code>, which outputs a character, via system call. It takes a character as the first argument. For the second and subsequent unused arguments are set to 0:</p>
+<pre><div class="code-block-title">common.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">SYS_PUTCHAR</span> <span class="pl-c1">1</span>
+</code></pre>
+<pre><div class="code-block-title">user.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">putchar</span>(<span class="pl-k">char</span> ch) {
+    <span class="pl-bu">syscall</span>(SYS_PUTCHAR, ch, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>);
+}
+</code></pre>
+<h2 id="handle-ecall-instruction-in-the-kernel"><a class="anchor" href="14-system-call.html#handle-ecall-instruction-in-the-kernel">Handle <code>ecall</code> instruction in the kernel</a></h2>
+<p>Next, update the trap handler to handle <code>ecall</code> instruction:</p>
+<pre><div class="code-block-title">kernel.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">SCAUSE_ECALL</span> <span class="pl-c1">8</span>
+</code></pre>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">handle_trap</span>(<span class="pl-k">struct</span> trap_frame *f) {
+    <span class="pl-c1">uint32_t</span> scause = <span class="pl-c1">READ_CSR</span>(scause);
+    <span class="pl-c1">uint32_t</span> stval = <span class="pl-c1">READ_CSR</span>(stval);
+    <span class="pl-c1">uint32_t</span> user_pc = <span class="pl-c1">READ_CSR</span>(sepc);
+    <span class="pl-k">if</span> (scause == SCAUSE_ECALL) {
+        <span class="pl-c1">handle_syscall</span>(f);
+        user_pc += <span class="pl-c1">4</span>;
+    } <span class="pl-k">else</span> {
+        <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>unexpected trap scause=<span class="pl-c1">%x</span>, stval=<span class="pl-c1">%x</span>, sepc=<span class="pl-c1">%x</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, scause, stval, user_pc);
+    }
+
+    <span class="pl-c1">WRITE_CSR</span>(sepc, user_pc);
+}
+</code></pre>
+<p>Whether the <code>ecall</code> instruction was called can be determined by checking the value of <code>scause</code>. Besides calling the <code>handle_syscall</code> function, we also add 4 (the size of <code>ecall</code> instruction) to the value of <code>sepc</code>. This is because <code>sepc</code> points to the program counter that caused the exception, which points to the <code>ecall</code> instruction. If we don't change it, the kernel goes back to the same place, and the <code>ecall</code> instruction is executed repeatedly.</p>
+<h2 id="system-call-handler"><a class="anchor" href="14-system-call.html#system-call-handler">System call handler</a></h2>
+<p>The following system call handler is called from the trap handler. It receives a structure of "registers at the time of exception" that was saved in the trap handler:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">handle_syscall</span>(<span class="pl-k">struct</span> trap_frame *f) {
+    <span class="pl-k">switch</span> (f-><span class="pl-smi">a3</span>) {
+        <span class="pl-k">case</span> SYS_PUTCHAR:
+            <span class="pl-c1">putchar</span>(f-><span class="pl-smi">a0</span>);
+            <span class="pl-k">break</span>;
+        <span class="pl-k">default</span>:
+            <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>unexpected syscall a3=<span class="pl-c1">%x</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, f-><span class="pl-smi">a3</span>);
+    }
+}
+</code></pre>
+<p>It determines the type of system call by checking the value of the <code>a3</code> register. Now we only have one system call, <code>SYS_PUTCHAR</code>, which simply outputs the character stored in the <code>a0</code> register.</p>
+<h2 id="test-the-system-call"><a class="anchor" href="14-system-call.html#test-the-system-call">Test the system call</a></h2>
+<p>You've implemented the system call. Let's try it out!</p>
+<p>Do you remember the implementation of the <code>printf</code> function in <code>common.c</code>? It calls the <code>putchar</code> function to display characters. Since we have just implemented <code>putchar</code> in the userland library, we can use it as is:</p>
+<pre><div class="code-block-title">shell.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>Hello World from shell!<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+}
+</code></pre>
+<p>You'll see the charming message on the screen:</p>
+<pre><code class="language-plain">$ ./run.sh
+Hello World from shell!
+</code></pre>
+<p>Congratulations! You've successfully implemented the system call! But we're not done yet. Let's implement more system calls!</p>
+<h2 id="receive-characters-from-keyboard-getchar-system-call"><a class="anchor" href="14-system-call.html#receive-characters-from-keyboard-getchar-system-call">Receive characters from keyboard (<code>getchar</code> system call)</a></h2>
+<p>Our next goal is to implement shell. To do that, we need to be able to receive characters from the keyboard.</p>
+<p>SBI provides an interface to read "input to the debug console". If there is no input, it returns <code>-1</code>:</p>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">long</span> <span class="pl-en">getchar</span>(<span class="pl-k">void</span>) {
+    <span class="pl-k">struct</span> sbiret ret = <span class="pl-c1">sbi_call</span>(<span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">2</span>);
+    <span class="pl-k">return</span> ret.<span class="pl-smi">error</span>;
+}
+</code></pre>
+<p>The <code>getchar</code> system call is implemented as follows:</p>
+<pre><div class="code-block-title">common.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">SYS_GETCHAR</span> <span class="pl-c1">2</span>
+</code></pre>
+<pre><div class="code-block-title">user.c</div><code class="language-c"><span class="pl-k">int</span> <span class="pl-en">getchar</span>(<span class="pl-k">void</span>) {
+    <span class="pl-k">return</span> <span class="pl-bu">syscall</span>(SYS_GETCHAR, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>);
+}
+</code></pre>
+<pre><div class="code-block-title">user.h</div><code class="language-c"><span class="pl-k">int</span> <span class="pl-en">getchar</span>(<span class="pl-k">void</span>);
+</code></pre>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">handle_syscall</span>(<span class="pl-k">struct</span> trap_frame *f) {
+    <span class="pl-k">switch</span> (f-><span class="pl-smi">a3</span>) {
+        <span class="pl-k">case</span> SYS_GETCHAR:
+            <span class="pl-k">while</span> (<span class="pl-c1">1</span>) {
+                <span class="pl-k">long</span> ch = <span class="pl-c1">getchar</span>();
+                <span class="pl-k">if</span> (ch >= <span class="pl-c1">0</span>) {
+                    f-><span class="pl-smi">a0</span> = ch;
+                    <span class="pl-k">break</span>;
+                }
+
+                <span class="pl-c1">yield</span>();
+            }
+            <span class="pl-k">break</span>;
+        <span class="pl-c">/* omitted */</span>
+    }
+}
+</code></pre>
+<p>The implementation of the <code>getchar</code> system call repeatedly calls the SBI until a character is input. However, simply repeating this prevents other processes from running, so we call the <code>yield</code> system call to yield the CPU to other processes.</p>
+<blockquote class="callout callout-note">
+<p>Strictly speaking, SBI does not read characters from keyboard, but from the serial port. It works because the keyboard (or QEMU's standard input) is connected to the serial port.</p>
+</blockquote>
+<h2 id="write-a-shell"><a class="anchor" href="14-system-call.html#write-a-shell">Write a shell</a></h2>
+<p>Let's write a shell with a simple command <code>hello</code>, which displays <code>Hello world from shell!</code>:</p>
+<pre><div class="code-block-title">shell.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">main</span>(<span class="pl-k">void</span>) {
+    <span class="pl-k">while</span> (<span class="pl-c1">1</span>) {
+prompt:
+        <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>> <span class="pl-pds">"</span></span>);
+        <span class="pl-k">char</span> cmdline[<span class="pl-c1">128</span>];
+        <span class="pl-k">for</span> (<span class="pl-k">int</span> i = <span class="pl-c1">0</span>;; i++) {
+            <span class="pl-k">char</span> ch = <span class="pl-c1">getchar</span>();
+            <span class="pl-c1">putchar</span>(ch);
+            <span class="pl-k">if</span> (i == <span class="pl-k">sizeof</span>(cmdline) - <span class="pl-c1">1</span>) {
+                <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>command line too long<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+                <span class="pl-k">goto</span> prompt;
+            } <span class="pl-k">else</span> <span class="pl-k">if</span> (ch == <span class="pl-s"><span class="pl-pds">'</span><span class="pl-cce">\r</span><span class="pl-pds">'</span></span>) {
+                <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+                cmdline[i] = <span class="pl-s"><span class="pl-pds">'</span><span class="pl-cce">\0</span><span class="pl-pds">'</span></span>;
+                <span class="pl-k">break</span>;
+            } <span class="pl-k">else</span> {
+                cmdline[i] = ch;
+            }
+        }
+
+        <span class="pl-k">if</span> (<span class="pl-c1">strcmp</span>(cmdline, <span class="pl-s"><span class="pl-pds">"</span>hello<span class="pl-pds">"</span></span>) == <span class="pl-c1">0</span>)
+            <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>Hello world from shell!<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+        <span class="pl-k">else</span>
+            <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>unknown command: <span class="pl-c1">%s</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, cmdline);
+    }
+}
+</code></pre>
+<p>It reads characters until a newline comes, and check if the entered string matches the command name.</p>
+<blockquote class="callout callout-warning">
+<p>Note that on the debug console, the newline character is (<code>'\r'</code>).</p>
+</blockquote>
+<p>Let's try typing <code>hello</code> command:</p>
+<pre><code class="language-plain">$ ./run.sh
+
+> hello
+Hello world from shell!
+</code></pre>
+<p>Your OS is starting to look like a real OS! How fast you've come this far!</p>
+<h2 id="process-termination-exit-system-call"><a class="anchor" href="14-system-call.html#process-termination-exit-system-call">Process termination (<code>exit</code> system call)</a></h2>
+<p>Lastly, let's implement <code>exit</code> system call, which terminates the process:</p>
+<pre><div class="code-block-title">common.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">SYS_EXIT</span>    <span class="pl-c1">3</span>
+</code></pre>
+<pre><div class="code-block-title">user.c</div><code class="language-c"><span class="pl-en">__attribute__</span>((noreturn)) void exit(<span class="pl-k">void</span>) {
+    <span class="pl-bu">syscall</span>(SYS_EXIT, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>, <span class="pl-c1">0</span>);
+    <span class="pl-k">for</span> (;;); <span class="pl-c">// Just in case!</span>
+}
+</code></pre>
+<pre><div class="code-block-title">kernel.h</div><code class="language-c">#<span class="pl-k">define</span> <span class="pl-en">PROC_EXITED</span>   <span class="pl-c1">2</span>
+</code></pre>
+<pre><div class="code-block-title">kernel.c</div><code class="language-c"><span class="pl-k">void</span> <span class="pl-en">handle_syscall</span>(<span class="pl-k">struct</span> trap_frame *f) {
+    <span class="pl-k">switch</span> (f-><span class="pl-smi">a3</span>) {
+        <span class="pl-k">case</span> SYS_EXIT:
+            <span class="pl-c1">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>process <span class="pl-c1">%d</span> exited<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, current_proc-><span class="pl-smi">pid</span>);
+            current_proc-><span class="pl-smi">state</span> = PROC_EXITED;
+            <span class="pl-c1">yield</span>();
+            <span class="pl-c1">PANIC</span>(<span class="pl-s"><span class="pl-pds">"</span>unreachable<span class="pl-pds">"</span></span>);
+        <span class="pl-c">/* omitted */</span>
+    }
+}
+</code></pre>
+<p>The system call changes the process state to <code>PROC_EXITED</code>, and call <code>yield</code> to give up the CPU to other processes. The scheduler will only execute processes in <code>PROC_RUNNABLE</code> state, so it will never return to this process. However, <code>PANIC</code> macro is added to cause a panic in case it does return.</p>
+<blockquote class="callout callout-tip">
+<p>For simplicity, we only mark the process as exited (<code>PROC_EXITED</code>). If you want to build a practical OS, it is necessary to free resources held by the process, such as page tables and allocated memory regions.</p>
+</blockquote>
+<p>Add the <code>exit</code> command to the shell:</p>
+<pre><div class="code-block-title">shell.c</div><code class="language-c">        <span class="pl-k">if</span> (strcmp(cmdline, <span class="pl-s"><span class="pl-pds">"</span>hello<span class="pl-pds">"</span></span>) == <span class="pl-c1">0</span>)
+            <span class="pl-en">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>Hello world from shell!<span class="pl-cce">\n</span><span class="pl-pds">"</span></span>);
+        <span class="pl-k">else</span> <span class="pl-k">if</span> (strcmp(cmdline, <span class="pl-s"><span class="pl-pds">"</span>exit<span class="pl-pds">"</span></span>) == <span class="pl-c1">0</span>)
+            <span class="pl-en">exit</span>();
+        <span class="pl-k">else</span>
+            <span class="pl-en">printf</span>(<span class="pl-s"><span class="pl-pds">"</span>unknown command: <span class="pl-c1">%s</span><span class="pl-cce">\n</span><span class="pl-pds">"</span></span>, cmdline);
+</code></pre>
+<p>You're done! Let's try running it:</p>
+<pre><code class="language-plain">$ ./run.sh
+
+> exit
+process 2 exited
+PANIC: kernel.c:333: switched to idle process
+</code></pre>
+<p>When the <code>exit</code> command is executed, the shell process terminates via system call, and there are no other runnable processes remaining. As a result, the scheduler will select the idle process and cause a panic.</p></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="15-virtio-blk.html">Disk I/O ⏩</a><a href="13-user-mode.html" class="sm:-order-1">⏪ User Mode</a></div></footer></body></html>

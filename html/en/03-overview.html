@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html><head><title>Overview - Operating System in 1,000 Lines</title><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" type="image/x-icon" href="../favicon.ico"><script>
+            window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+          </script><script defer="true" src="../_vercel/insights/script.js"></script><link rel="stylesheet" href="../styles.css"><meta name="generator" content="Docship (https://github.com/nuta/docship)"></head><body class="mx-auto max-w-3xl w-full py-8 px-4"><header><h1 class="text-center mb-8 text-xl font-bold">Operating System in 1,000 Lines - Overview</h1><div class="mb-8 container mx-auto flex justify-center"><ol class="w-full my-0 sm:w-fit grid grid-rows-[repeat(9,auto)] grid-flow-col gap-x-4" start="0"><li class="my-1"><a href="../en.html" class="">Intro</a></li><li class="my-1"><a href="01-setting-up-development-environment.html" class="">Getting Started</a></li><li class="my-1"><a href="02-assembly.html" class="">RISC-V 101</a></li><li class="my-1"><a href="03-overview.html" class="font-bold">Overview</a></li><li class="my-1"><a href="04-boot.html" class="">Boot</a></li><li class="my-1"><a href="05-hello-world.html" class="">Hello World!</a></li><li class="my-1"><a href="06-libc.html" class="">C Standard Library</a></li><li class="my-1"><a href="07-kernel-panic.html" class="">Kernel Panic</a></li><li class="my-1"><a href="08-exception.html" class="">Exception</a></li><li class="my-1"><a href="09-memory-allocation.html" class="">Memory Allocation</a></li><li class="my-1"><a href="10-process.html" class="">Process</a></li><li class="my-1"><a href="11-page-table.html" class="">Page Table</a></li><li class="my-1"><a href="12-application.html" class="">Application</a></li><li class="my-1"><a href="13-user-mode.html" class="">User Mode</a></li><li class="my-1"><a href="14-system-call.html" class="">System Call</a></li><li class="my-1"><a href="15-virtio-blk.html" class="">Disk I/O</a></li><li class="my-1"><a href="16-file-system.html" class="">File System</a></li><li class="my-1"><a href="17-outro.html" class="">Outro</a></li></ol></div></header><main><h2 id="features-in-1k-loc-os"><a class="anchor" href="03-overview.html#features-in-1k-loc-os">Features in 1K LoC OS</a></h2>
+<p>In this book, we will implement the following major features:</p>
+<ul>
+<li><strong>Multitasking</strong>: Switch between processes to allow multiple applications to share the CPU.</li>
+<li><strong>Exception handler</strong>: Handle events requiring OS intervention, such as illegal instructions.</li>
+<li><strong>Paging</strong>: Provide an isolated memory address space for each application.</li>
+<li><strong>System calls</strong>: Allow applications to call kernel features.</li>
+<li><strong>Device drivers</strong>: Abstract hardware functionalities, such as disk read/write.</li>
+<li><strong>File system</strong>: Manage files on disk.</li>
+<li><strong>Command-line shell</strong>: User interface for humans.</li>
+</ul>
+<h2 id="features-not-implemented"><a class="anchor" href="03-overview.html#features-not-implemented">Features not implemented</a></h2>
+<p>The following major features are not implemented in this book:</p>
+<ul>
+<li><strong>Interrupt handling</strong>: Instead, we will use a polling method (periodically check for new data on devices), also known as busy waiting.</li>
+<li><strong>Timer processing</strong>: Preemptive multitasking is not implemented. We'll use cooperative multitasking, where each process voluntarily yields the CPU.</li>
+<li><strong>Inter-process communication</strong>: Features such as pipe, UNIX domain socket, and shared memory are not implemented.</li>
+<li><strong>Multi-processor support</strong>: Only single processor is supported.</li>
+</ul>
+<h2 id="source-code-structure"><a class="anchor" href="03-overview.html#source-code-structure">Source code structure</a></h2>
+<p>We'll build from scratch incrementally, and the final file structure will look like this:</p>
+<pre><code>├── disk/     - File system contents
+├── common.c  - Kernel/user common library: printf, memset, ...
+├── common.h  - Kernel/user common library: definitions of structs and constants
+├── kernel.c  - Kernel: process management, system calls, device drivers, file system
+├── kernel.h  - Kernel: definitions of structs and constants
+├── kernel.ld - Kernel: linker script (memory layout definition)
+├── shell.c   - Command-line shell
+├── user.c    - User library: functions for system calls
+├── user.h    - User library: definitions of structs and constants
+├── user.ld   - User: linker script (memory layout definition)
+└── run.sh    - Build script
+</code></pre>
+<blockquote class="callout callout-tip">
+<p>In this book, "user land" is sometimes abbreviated as "user". Consider it as "applications", and do not confuse it with "user account"!</p>
+</blockquote></main><footer class="mt-8 border-t border-gray-200 py-4"><div class="container mx-auto px-4 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 text-lg"><a href="04-boot.html">Boot ⏩</a><a href="02-assembly.html" class="sm:-order-1">⏪ RISC-V 101</a></div></footer></body></html>
